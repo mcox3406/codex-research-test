@@ -42,13 +42,14 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import sys
 import tempfile
 from typing import Iterable, List
 
 import mdtraj as md
 import numpy as np
 from openmm import LangevinIntegrator, Platform
-from openmm.app import GBSAOBCForce, Modeller, PDBFile, Simulation
+from openmm.app import Modeller, PDBFile, Simulation
 from openmm.app import ForceField, NoCutoff
 from openmm.unit import kelvin, picosecond, femtosecond
 
@@ -61,10 +62,39 @@ _DEFAULT_FORCEFIELD = ("amber99sbildn.xml", "amber99_obc.xml")
 
 
 def _load_modeller(pdb_path: pathlib.Path) -> Modeller:
-    """Load the input PDB file into an OpenMM `Modeller` instance."""
+    """Load the input PDB file into an OpenMM `Modeller` instance.
+
+    For cyclic peptides, manually adds the bond between the C-terminus
+    and N-terminus to close the ring.
+    """
 
     pdb = PDBFile(str(pdb_path))
     modeller = Modeller(pdb.topology, pdb.positions)
+
+    # Add cyclic bond between last residue's C and first residue's N
+    residues = list(modeller.topology.residues())
+    if len(residues) > 1:
+        first_res = residues[0]
+        last_res = residues[-1]
+
+        # Find the C atom in the last residue
+        c_atom = None
+        for atom in last_res.atoms():
+            if atom.name == 'C':
+                c_atom = atom
+                break
+
+        # Find the N atom in the first residue
+        n_atom = None
+        for atom in first_res.atoms():
+            if atom.name == 'N':
+                n_atom = atom
+                break
+
+        # Add the bond if both atoms were found
+        if c_atom is not None and n_atom is not None:
+            modeller.topology.addBond(c_atom, n_atom)
+
     return modeller
 
 
@@ -77,7 +107,6 @@ def _configure_simulation(modeller: Modeller, temperature: float) -> Simulation:
         nonbondedMethod=NoCutoff,
         constraints=None,
         removeCMMotion=True,
-        implicitSolvent=GBSAOBCForce(),
     )
 
     integrator = LangevinIntegrator(temperature * kelvin, _DEFAULT_FRICTION, _DEFAULT_TIMESTEP)
@@ -139,6 +168,7 @@ def generate_conformations(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = pathlib.Path(tmpdir)
         for replica in range(replicas):
+            print(f"Starting replica {replica + 1}/{replicas} ({ns_per_replica} ns)...", flush=True)
             simulation = _configure_simulation(modeller, temperature)
             dcd_path = tmpdir_path / f"replica_{replica:02d}.dcd"
             log_path = tmpdir_path / f"replica_{replica:02d}.log"
@@ -155,6 +185,18 @@ def generate_conformations(
                     temperature=True,
                     progress=True,
                     elapsedTime=True,
+                    totalSteps=n_steps,
+                )
+            )
+            simulation.reporters.append(
+                StateDataReporter(
+                    sys.stdout,
+                    report_interval,
+                    step=True,
+                    progress=True,
+                    remainingTime=True,
+                    speed=True,
+                    totalSteps=n_steps,
                 )
             )
 
