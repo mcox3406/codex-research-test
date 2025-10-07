@@ -92,6 +92,12 @@ def _pairwise_cost_np(points_a: np.ndarray, points_b: np.ndarray, order: float) 
 
 
 def _pairwise_cost_torch(points_a: Tensor, points_b: Tensor, order: float) -> Tensor:
+    if points_a.numel() == 0 or points_b.numel() == 0:
+        return torch.empty(
+            (points_a.shape[0], points_b.shape[0]),
+            dtype=points_a.dtype,
+            device=points_a.device,
+        )
     dist = torch.cdist(points_a, points_b, p=2)
     return dist.pow(order)
 
@@ -120,14 +126,79 @@ def _hungarian(cost_matrix: np.ndarray) -> float:
 
 
 def _uniform_weights(size: int, like: Tensor) -> Tensor:
-    return torch.full((size,), 1.0 / max(size, 1), dtype=like.dtype, device=like.device)
+    if size == 0:
+        return torch.empty((0,), dtype=like.dtype, device=like.device)
+    return torch.ones((size,), dtype=like.dtype, device=like.device)
+
+
+def _uniform_weights_np(size: int) -> np.ndarray:
+    if size == 0:
+        return np.empty((0,), dtype=float)
+    return np.ones((size,), dtype=float)
+
+
+def _logsumexp_np(values: np.ndarray, axis: int) -> np.ndarray:
+    max_val = np.max(values, axis=axis, keepdims=True)
+    stable = values - max_val
+    summed = np.log(np.sum(np.exp(stable), axis=axis, keepdims=True))
+    return (max_val + summed).squeeze(axis=axis)
+
+
+def _sinkhorn_numpy(
+    cost_matrix: np.ndarray,
+    order: float,
+    epsilon: float,
+    max_iterations: int,
+    tolerance: float,
+    weights_a: Optional[np.ndarray] = None,
+    weights_b: Optional[np.ndarray] = None,
+) -> float:
+    if cost_matrix.size == 0:
+        return 0.0
+
+    n, m = cost_matrix.shape
+    if n != m:
+        raise ValueError("Extended persistence cost matrices must be square.")
+
+    if weights_a is None:
+        weights_a = _uniform_weights_np(n)
+    if weights_b is None:
+        weights_b = _uniform_weights_np(m)
+
+    mass_a = float(np.sum(weights_a))
+    mass_b = float(np.sum(weights_b))
+    if not np.isclose(mass_a, mass_b, rtol=1e-6, atol=1e-9):
+        raise ValueError("Total mass of extended diagrams must match for Sinkhorn computation.")
+
+    norm_weights_a = weights_a / max(mass_a, 1e-12)
+    norm_weights_b = weights_b / max(mass_b, 1e-12)
+
+    log_weights_a = np.log(np.clip(norm_weights_a, 1e-12, None))
+    log_weights_b = np.log(np.clip(norm_weights_b, 1e-12, None))
+
+    log_K = -cost_matrix / epsilon
+
+    u = np.zeros_like(log_weights_a)
+    v = np.zeros_like(log_weights_b)
+
+    for _ in range(max_iterations):
+        u_prev = u
+        u = log_weights_a - _logsumexp_np(log_K + v[np.newaxis, :], axis=1)
+        v = log_weights_b - _logsumexp_np(log_K + u[:, np.newaxis], axis=0)
+        if np.max(np.abs(u - u_prev)) < tolerance:
+            break
+
+    transport = np.exp(log_K + u[:, np.newaxis] + v[np.newaxis, :])
+    total = float(np.sum(transport * cost_matrix))
+    scaled_total = total * mass_a
+    return float(np.clip(scaled_total, 0.0, None) ** (1.0 / order))
 
 
 def _sinkhorn(
     cost_matrix: Tensor,
     order: float,
     epsilon: float,
-    max_iterations: int = 200,
+    max_iterations: int = 1000,
     tolerance: float = 1e-6,
     weights_a: Optional[Tensor] = None,
     weights_b: Optional[Tensor] = None,
@@ -147,11 +218,16 @@ def _sinkhorn(
     if weights_b is None:
         weights_b = _uniform_weights(m, cost_matrix)
 
-    weights_a = weights_a / weights_a.sum()
-    weights_b = weights_b / weights_b.sum()
+    mass_a = weights_a.sum()
+    mass_b = weights_b.sum()
+    if not torch.allclose(mass_a, mass_b, rtol=1e-6, atol=1e-9):
+        raise ValueError("Total mass of extended diagrams must match for Sinkhorn computation.")
 
-    log_weights_a = torch.log(weights_a.clamp_min(1e-12))
-    log_weights_b = torch.log(weights_b.clamp_min(1e-12))
+    norm_weights_a = weights_a / mass_a.clamp_min(1e-12)
+    norm_weights_b = weights_b / mass_b.clamp_min(1e-12)
+
+    log_weights_a = torch.log(norm_weights_a.clamp_min(1e-12))
+    log_weights_b = torch.log(norm_weights_b.clamp_min(1e-12))
 
     log_K = -cost_matrix / epsilon
 
@@ -167,7 +243,7 @@ def _sinkhorn(
 
     transport = torch.exp(log_K + u.unsqueeze(1) + v.unsqueeze(0))
     total = torch.sum(transport * cost_matrix)
-    return total.clamp_min(0.0).pow(1.0 / order)
+    return total.mul(mass_a).clamp_min(0.0).pow(1.0 / order)
 
 
 def wasserstein_distance(
@@ -176,7 +252,7 @@ def wasserstein_distance(
     order: float = 2.0,
     method: str = "auto",
     epsilon: float = 5e-3,
-    max_iterations: int = 200,
+    max_iterations: int = 1000,
     tolerance: float = 1e-6,
 ) -> Union[float, Tensor]:
     """Compute the Wasserstein distance between two persistence diagrams.
@@ -240,6 +316,9 @@ def _wasserstein_numpy(
     if a.size == 0 and b.size == 0:
         return 0.0
 
+    if a.shape == b.shape and np.allclose(a, b):
+        return 0.0
+
     if gudhi_wasserstein is not None and method in {"auto", "exact"}:
         return float(gudhi_wasserstein.wasserstein_distance(a, b, order=order))
 
@@ -250,18 +329,14 @@ def _wasserstein_numpy(
         cost = _prepare_cost_matrix_np(a, b, order)
         return _hungarian(cost) ** (1.0 / order)
 
-    if torch is None:
-        raise RuntimeError("PyTorch is required for Sinkhorn Wasserstein computation.")
-    tensor_dist = _wasserstein_torch(
-        a,
-        b,
+    cost = _prepare_cost_matrix_np(a, b, order)
+    return _sinkhorn_numpy(
+        cost,
         order=order,
-        method="sinkhorn",
         epsilon=epsilon,
         max_iterations=max_iterations,
         tolerance=tolerance,
     )
-    return float(tensor_dist.detach().cpu().item())
 
 
 def _wasserstein_torch(
@@ -270,13 +345,16 @@ def _wasserstein_torch(
     order: float,
     method: str,
     epsilon: float,
-    max_iterations: int = 200,
+    max_iterations: int = 1000,
     tolerance: float = 1e-6,
 ) -> Tensor:
     a = _ensure_tensor(diagram_a)
     b = _ensure_tensor(diagram_b, like=a)
 
     if a.numel() == 0 and b.numel() == 0:
+        return torch.zeros((), dtype=a.dtype, device=a.device)
+
+    if a.shape == b.shape and torch.allclose(a, b):
         return torch.zeros((), dtype=a.dtype, device=a.device)
 
     if gudhi_wasserstein is not None and method in {"auto", "exact"}:
