@@ -24,57 +24,105 @@ Generative models for molecular conformations promise rapid exploration of confo
 \section{Introduction}
 Generative models for molecular conformations are rapidly advancing as tools for sampling high-dimensional energy landscapes, enabling accelerated design and analysis of flexible biomolecules \cite{noe2019boltzmann, trippe2023diffusion}. Nevertheless, state-of-the-art models frequently exhibit mode collapse, produce conformations that violate stereochemical constraints, or generate latent interpolations that pass through energetically inaccessible regions. We argue that these failures stem from a topological mismatch: the data manifold of molecular conformations possesses non-trivial homology, particularly loops arising from cyclic transition pathways, while typical latent spaces are topologically trivial.
 
-Persistent homology offers a robust, noise-stable summary of global structure \cite{edelsbrunner2010computational, carlsson2009topology}. By measuring the birth and death of topological features across scales, persistence diagrams capture loops that encode the cyclic motions of molecules. Prior work has demonstrated the theoretical stability of persistence diagrams under perturbations \cite{cohen2007stability} and their utility in characterizing molecular energy landscapes \cite{carlsson2009topology, sommers2023tda}. However, these insights have rarely been integrated into the training objectives of generative models.
+Let $n$ denote the number of atoms and write a conformation as $X \in (\mathbb{R}^3)^n$. Physical observables are invariant under rigid motions, so the conformational manifold is the quotient
+\begin{equation}
+    \mathcal{M} \coloneqq \big\{ X \in (\mathbb{R}^3)^n : \text{bond and angle constraints} \big\} / \mathrm{SE}(3),
+    \label{eq:manifold}
+\end{equation}
+which collects all physically feasible coordinate sets while removing translation and rotation. The fundamental group of $\mathcal{M}$ encodes ring flips and other cyclic rearrangements; readers may view it as counting distinct ways to traverse loops without tearing the manifold. A generative model introduces a latent prior $p(z)$ and a decoder $g_\theta : \mathbb{R}^d \to (\mathbb{R}^3)^n$ whose pushforward distribution $g_{\theta\,\#}p$ is typically supported on a contractible subset of $(\mathbb{R}^3)^n$. Consequently,
+\begin{equation}
+    \pi_1\big( \operatorname{supp}(g_{\theta\,\#}p) / \mathrm{SE}(3) \big) \cong 0 \qquad \text{whereas} \qquad \pi_1(\mathcal{M}) \not\cong 0,
+    \label{eq:fundamental-group-mismatch}
+\end{equation}
+highlighting a structural incompatibility that drives the observed generative failures. Equation~\eqref{eq:fundamental-group-mismatch} states that the learned distribution lives on a space with no genuine loops, while the true molecule does possess them; this tension manifests as interpolations that cut across barriers or miss important conformations. Our objective is to modify the training procedure so that the learned distribution respects these global invariants of $\mathcal{M}$ without sacrificing sample quality.
 
-We propose the first persistent homology-based regularization for molecular generative models. Our method augments a variational autoencoder (VAE) with a topological loss that penalizes the Wasserstein distance between persistence diagrams computed on real and generated conformations. Motivated by the known topology of cyclic peptides \cite{wales2001microscopic, shaw2010atomic}, we focus on $H_1$ features corresponding to conformational loops. The resulting model preserves ring-flipping pathways, improves reconstruction fidelity, and delivers latent spaces with interpolations aligned to the physical manifold.
+Persistent homology offers a robust, noise-stable summary of global structure \cite{edelsbrunner2010computational, carlsson2009topology}. Rather than requiring deep algebraic background, one can regard it as scanning the data with a ``growing ruler'' and recording when connected components merge or loops appear and disappear. By measuring the birth and death of these topological features across scales, persistence diagrams capture loops that encode the cyclic motions of molecules. Prior work has demonstrated the theoretical stability of persistence diagrams under perturbations \cite{cohen2007stability} and their utility in characterizing molecular energy landscapes \cite{carlsson2009topology, sommers2023tda}. However, these insights have rarely been integrated into the training objectives of generative models.
 
-Our contributions are threefold: (i) we formalize a differentiable topological loss tailored to molecular conformations; (ii) we provide an architecture and training pipeline that integrates persistent homology computations into VAE training; and (iii) we empirically validate the approach on cyclic peptides, demonstrating improved preservation of $H_1$ features and reductions in topological Wasserstein distances relative to strong baselines.
+We propose the first persistent homology-based regularization for molecular generative models. Our method augments a variational autoencoder (VAE) with a topological loss that penalizes the Wasserstein distance between persistence diagrams computed on real and generated conformations. Motivated by the known topology of cyclic peptides \cite{wales2001microscopic, shaw2010atomic}, we focus on $H_1$ features corresponding to conformational loops. In practical terms, the loss encourages generated ensembles to reproduce the same loop-like signatures as molecular dynamics data, providing an intuitive geometric guardrail. By constraining the decoder $g_\theta$ so that its samples share persistence with the empirical distribution, we implicitly enforce that $g_{\theta\,\#}p$ lies in a homotopy class compatible with $\mathcal{M}$. The resulting model preserves ring-flipping pathways, improves reconstruction fidelity, and delivers latent spaces with interpolations aligned to the physical manifold.
+
+Our contributions are threefold: (i) we formalize a differentiable topological loss tailored to molecular conformations; (ii) we provide an architecture and training pipeline that integrates persistent homology computations into VAE training; and (iii) we empirically validate the approach on cyclic peptides, demonstrating improved preservation of $H_1$ features and reductions in topological Wasserstein distances relative to strong baselines. Throughout the paper we pair formal statements with chemical intuition so that the method remains accessible to researchers who may be new to algebraic topology.
 
 \section{Background}
 \subsection{Persistent Homology}
-Persistent homology quantifies the birth and death of topological features across a filtration parameter \cite{edelsbrunner2010computational, carlsson2009topology}. Given a point cloud $X = \{x_i\}_{i=1}^N$, we construct a Vietoris--Rips filtration by placing balls of radius $\epsilon$ around each point and adding simplices whenever all pairwise distances are below $2\epsilon$. As $\epsilon$ increases, connected components merge, loops form, and higher-dimensional voids may appear. Each feature is associated with a birth scale $b$ and death scale $d$, forming a multiset of points $(b, d)$ known as a persistence diagram (PD).
+Persistent homology quantifies the birth and death of topological features across a filtration parameter \cite{edelsbrunner2010computational, carlsson2009topology}. Given a point cloud $X = \{x_i\}_{i=1}^N \subset \mathbb{R}^m$, the Vietoris--Rips complex at scale $\epsilon \geq 0$ is
+\begin{equation}
+    \mathrm{VR}_\epsilon(X) \coloneqq \big\{ \sigma \subseteq X : \|x_i - x_j\|_2 \leq 2\epsilon \; \forall x_i, x_j \in \sigma \big\}.
+    \label{eq:vietoris-rips}
+\end{equation}
+The collection $\big\{ \mathrm{VR}_\epsilon(X) \big\}_{\epsilon \geq 0}$ forms an increasing sequence of simplicial complexes. Applying homology yields a persistence module $H_k(\mathrm{VR}_\epsilon(X))$ whose structure is summarized by a multiset of birth--death pairs $\mathrm{PD}^{(k)}(X) = \{(b_i, d_i)\}_{i}$. Features with large persistence $d_i - b_i$ correspond to salient $k$-dimensional holes, such as loops when $k=1$.
+
+For intuition, Eq.~\eqref{eq:vietoris-rips} simply connects atoms by springs whose length grows with $\epsilon$; a loop is recorded once a cycle of springs forms, and it disappears when the loop fills in. The persistence diagram stores these events as points, providing a concise picture of which loops survive across a range of length scales.
 
 The Wasserstein distance between two diagrams $\mathrm{PD}_1$ and $\mathrm{PD}_2$ is defined as
 \begin{equation}
     W_p(\mathrm{PD}_1, \mathrm{PD}_2) = \left( \inf_{\gamma \in \Gamma} \sum_{z \in \mathrm{PD}_1} \| z - \gamma(z) \|_p^p \right)^{1/p},
     \label{eq:wasserstein}
 \end{equation}
-where $\Gamma$ is the set of bijections between points of the diagrams augmented with the diagonal. Stability theorems guarantee that small perturbations of the input yield bounded changes in $W_p$, making persistence robust to sampling noise \cite{cohen2007stability, chazal2016structure}.
+where $\Gamma$ is the set of partial bijections augmented with diagonal projections. One can think of $W_p$ as the minimum effort required to slide every point of one diagram onto the other while allowing excess points to vanish along the diagonal. Stability theorems guarantee that small perturbations of the input yield bounded changes in $W_p$, specifically
+\begin{equation}
+    W_\infty\big( \mathrm{PD}^{(k)}(X), \mathrm{PD}^{(k)}(Y) \big) \leq 2 \cdot d_H(X, Y),
+    \label{eq:stability}
+\end{equation}
+where $d_H$ denotes the Hausdorff distance \cite{cohen2007stability, chazal2016structure}. This robustness is essential when diagrams are estimated from stochastic generative samples.
 
 \subsection{Topology of Conformational Space}
-Molecular conformations inhabit manifolds embedded in high-dimensional spaces defined by internal coordinates or Cartesian coordinates. Cyclic transitions, such as ring flips in cyclic peptides, induce loops in conformational space that manifest as persistent $H_1$ features \cite{wales2001microscopic, shaw2010atomic}. These loops correspond to distinct pathways connecting metastable states and are integral to thermodynamic and kinetic properties. Ignoring this topology leads to generative models that interpolate through unphysical conformations or collapse diverse pathways into single modes.
+Molecular conformations inhabit manifolds embedded in high-dimensional spaces defined by internal coordinates or Cartesian coordinates. After modding out rigid motions, Eq.~\eqref{eq:manifold} provides a compact representation whose $H_1$ Betti number counts independent loop classes. Cyclic transitions, such as ring flips in cyclic peptides, induce loops in conformational space that manifest as persistent $H_1$ features \cite{wales2001microscopic, shaw2010atomic}. These loops correspond to distinct pathways connecting metastable states and are integral to thermodynamic and kinetic properties. Ignoring this topology leads to generative models that interpolate through unphysical conformations or collapse diverse pathways into single modes.
 
-Prior studies of energy landscapes emphasize the importance of topology in understanding conformational diversity \cite{wales2001microscopic}. High-fidelity molecular dynamics simulations from D.~E.~Shaw Research reveal complex transition networks with multiple pathways \cite{shaw2010atomic}, underscoring the necessity of preserving loops during generative modeling. Topological descriptors therefore provide an interpretable lens for assessing whether generated ensembles respect known physical constraints.
+Chemically, the Betti number $\beta_1$ can be read as ``how many distinct ring-like motions exist'' after accounting for rigid-body freedom. For cyclic peptides the value is small---typically one or two---making it a transparent diagnostic of whether a model retains the expected pathway geometry.
+
+Representing conformations via internal dihedral angles $\theta \in \mathbb{T}^m$ further illustrates the topological structure: the mapping $\Psi : \mathbb{T}^m \to (\mathbb{R}^3)^n / \mathrm{SE}(3)$ is continuous and often wraps non-trivially around loops induced by torsional periodicity. Prior studies of energy landscapes emphasize the importance of topology in understanding conformational diversity \cite{wales2001microscopic}. High-fidelity molecular dynamics simulations from D.~E.~Shaw Research reveal complex transition networks with multiple pathways \cite{shaw2010atomic}, underscoring the necessity of preserving loops during generative modeling. Topological descriptors therefore provide an interpretable lens for assessing whether generated ensembles respect known physical constraints.
 
 \subsection{Generative Models for Molecules}
-Variational autoencoders posit a latent Gaussian prior and optimize the evidence lower bound (ELBO),
+Variational autoencoders posit a latent Gaussian prior $p(z) = \mathcal{N}(0, I_d)$ and an encoder $q_\phi(z \mid x)$ that approximates the posterior over latent states. The decoder $p_\theta(x \mid z)$ induces a generative distribution $p_\theta(x) = \int p_\theta(x \mid z) p(z) \mathrm{d}z$ whose support inherits the topology of the latent space. Training maximizes the evidence lower bound (ELBO)
 \begin{equation}
-    \mathcal{L}_{\text{ELBO}} = \mathbb{E}_{q_\phi(z \mid x)} [\log p_\theta(x \mid z)] - \beta \cdot \mathrm{KL}\big(q_\phi(z \mid x) \big\| p(z)\big),
+    \mathcal{L}_{\text{ELBO}}(\theta, \phi) = \mathbb{E}_{x \sim p_{\text{data}}} \big[ \mathbb{E}_{q_\phi(z \mid x)} [\log p_\theta(x \mid z)] - \beta \cdot \mathrm{KL}\big(q_\phi(z \mid x) \big\| p(z)\big) \big],
     \label{eq:elbo}
 \end{equation}
-where $q_\phi$ and $p_\theta$ denote encoder and decoder distributions respectively \cite{kingma2014auto}. Diffusion models and flow matching methods similarly assume Euclidean latent structures and optimize likelihoods under Gaussian perturbations \cite{song2021score, lipman2023flow}. These assumptions render latent spaces topologically trivial, creating mismatches with data manifolds that contain loops. Empirically, this mismatch manifests as mode collapse or interpolations that traverse energetically forbidden regions \cite{noe2019boltzmann, trippe2023diffusion}. Existing remedies rely on heuristic regularization or enhanced sampling but do not explicitly target topological invariants.
+where the inner expectation forms the reconstruction loss $\mathcal{L}_{\text{recon}}$ and the Kullback--Leibler divergence acts as a regularizer \cite{kingma2014auto}. Practically, the first term rewards accurate reproduction of atomic arrangements, while the second term prevents the latent codes from drifting far from the prior. Because $p(z)$ is contractible, the pushforward $g_{\theta\,\#}p$ concentrates on a topologically trivial subset unless additional constraints are imposed.
+
+Diffusion models approximate the score of a noising process $x_t$ governed by a stochastic differential equation $\mathrm{d}x_t = f_t(x_t) \, \mathrm{d}t + g_t \, \mathrm{d}w_t$ and learn a time-dependent score network $s_\theta(x_t, t)$ \cite{song2021score}. Flow matching methods construct an ordinary differential equation $\dot{x}_t = u_\theta(x_t, t)$ whose terminal distribution matches the data \cite{lipman2023flow}. In both cases, the latent construction assumes Euclidean geometry and path-connectedness, leading to the same mismatch highlighted in Eq.~\eqref{eq:fundamental-group-mismatch}. Empirically, this mismatch manifests as mode collapse or interpolations that traverse energetically forbidden regions \cite{noe2019boltzmann, trippe2023diffusion}. Existing remedies rely on heuristic regularization or enhanced sampling but do not explicitly target topological invariants.
 
 \section{Methods}
 \subsection{Topological Loss Function}
 We augment the ELBO with a persistent homology regularizer,
 \begin{equation}
-    \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{recon}} + \beta \cdot \mathcal{L}_{\text{KL}} + \lambda \cdot \mathcal{L}_{\text{topo}},
+    \mathcal{L}_{\text{total}}(\theta, \phi) = \mathcal{L}_{\text{recon}} + \beta \cdot \mathcal{L}_{\text{KL}} + \lambda \cdot \mathcal{L}_{\text{topo}},
     \label{eq:total_loss}
 \end{equation}
-where $\mathcal{L}_{\text{recon}}$ and $\mathcal{L}_{\text{KL}}$ denote the reconstruction and Kullback--Leibler terms from Eq.~\eqref{eq:elbo}. The topological component compares persistence diagrams of real and generated conformations:
+where $\mathcal{L}_{\text{recon}}$ and $\mathcal{L}_{\text{KL}}$ denote the reconstruction and Kullback--Leibler components of Eq.~\eqref{eq:elbo}. The topological term is defined in expectation over minibatches,
 \begin{equation}
-    \mathcal{L}_{\text{topo}} = W_p\big( \mathrm{PD}^{(H_1)}(X_{\text{real}}), \mathrm{PD}^{(H_1)}(X_{\text{gen}}) \big),
+    \mathcal{L}_{\text{topo}}(\theta, \phi) = \mathbb{E}_{x \sim p_{\text{data}}} \mathbb{E}_{z \sim q_\phi(z \mid x)} \big[ W_p\big( \mathrm{PD}^{(1)}(T(x)), \mathrm{PD}^{(1)}(T(g_\theta(z))) \big) \big],
+    \label{eq:topo-loss}
 \end{equation}
-with $p=2$ in practice. To control computational overhead, we evaluate $\mathcal{L}_{\text{topo}}$ every $N$ minibatches, accumulate gradients via automatic differentiation or entropic-regularized optimal transport, and optionally smooth diagram points via persistence images.
+where $T$ denotes a canonicalization operator that removes rigid-body motion prior to computing persistence diagrams. The double expectation pairs each molecular dynamics frame with reconstructions drawn from the approximate posterior, so the loss explicitly compares like-with-like ensembles. We focus on first homology ($k=1$) because it captures conformational loops that encode cyclic transitions.
+
+To obtain gradients with respect to $\theta$, we differentiate through an entropically regularized optimal transport approximation \cite{cuturi2013sinkhorn}:
+\begin{equation}
+    W_{p, \varepsilon}(\mathrm{PD}_1, \mathrm{PD}_2) = \min_{\pi \in \Pi(\mu_1, \mu_2)} \sum_{i,j} \pi_{ij} \| z_i - z'_j \|_p^p + \varepsilon \sum_{i,j} \pi_{ij} (\log \pi_{ij} - 1),
+    \label{eq:entropic-wasserstein}
+\end{equation}
+with $\varepsilon > 0$ providing smoothness. The Sinkhorn fixed-point iterations yield gradients $\nabla_{z'_j} W_{p, \varepsilon}$ that back-propagate to atom coordinates $g_\theta(z)$ and subsequently to network parameters. Readers less familiar with optimal transport may view Sinkhorn iterations as repeatedly normalizing the transport plan so that its rows and columns match the diagram marginals; the added entropy term keeps the plan dense enough for stable differentiation. In settings where diagrams are sparse, we optionally map them to persistence images $\Phi(\mathrm{PD}) \in \mathbb{R}^{H \times W}$ and use the differentiable squared norm $\| \Phi(\mathrm{PD}_1) - \Phi(\mathrm{PD}_2) \|_2^2$ \cite{adams2017persistence} as a surrogate that shares the same minimizers for salient features.
+
+We evaluate the topological loss every $N$ minibatches to amortize the cost of persistence computations, caching diagrams when possible. Hyperparameters $\lambda$ and $\varepsilon$ control the trade-off between geometric fidelity and topological alignment.
 
 \subsection{Architecture}
-Our VAE operates on centered and aligned 3D coordinates or dihedral representations of molecules. The encoder comprises multi-layer perceptrons with residual connections that map flattened coordinates to an 8--10 dimensional latent space. The decoder mirrors this structure and outputs reconstructed coordinates, followed by post-processing to enforce SE(3) invariance through recentroiding and alignment. We incorporate equivariant features such as pairwise distances to stabilize training while retaining differentiability.
+Our VAE operates on centered and aligned 3D coordinates or dihedral representations of molecules. Given an input $X \in (\mathbb{R}^3)^n$, we first apply $T(X)$ to remove translation and rotation via Procrustes alignment so that the network focuses on shape rather than absolute placement in space. The encoder comprises multi-layer perceptrons with residual connections that map invariants such as pairwise distances $D_{ij} = \|x_i - x_j\|_2$ and dihedral embeddings $(\sin \theta_k, \cos \theta_k)$ to an 8--10 dimensional latent space. The decoder mirrors this structure and outputs reconstructed coordinates $\hat{X} = g_\theta(z)$, followed by post-processing to enforce SE(3) invariance through re-centering and alignment. We incorporate equivariant features to stabilize training while retaining differentiability of the pipeline.
 
 \subsection{Persistence Diagram Computation}
-We compute Vietoris--Rips filtrations on batches of atomic coordinates using the GUDHI library. Distances are truncated at 15~\AA{} to reduce complexity. For each batch, we extract $H_0$ and $H_1$ diagrams and retain birth--death pairs with persistence above a small threshold to mitigate numerical noise. Batched computations leverage parallel processing across conformations, and diagram data structures are cached to amortize costs across training iterations.
+We compute Vietoris--Rips filtrations on batches of atomic coordinates using the GUDHI library. For a batch $\{X_b\}_{b=1}^B$, we form distance matrices $\Delta^{(b)}_{ij} = \| (T(X_b))_i - (T(X_b))_j \|_2$ and restrict edges to $\Delta^{(b)}_{ij} \leq r_{\max} = 15~\text{\AA}$ to reduce combinatorial complexity. The resulting complexes yield $H_0$ and $H_1$ diagrams; we retain birth--death pairs whose persistence exceeds a threshold $\tau$ to mitigate numerical noise. Batched computations leverage parallel processing across conformations, and diagram data structures are cached to amortize costs across training iterations.
 
 \subsection{Experimental Setup}
-Our evaluation centers on a cyclic hexapeptide (cyclo-Ala$_6$) simulated with AMBER99SB force fields in implicit solvent. Replica exchange molecular dynamics with five replicas of 10~ns each yields 5{,}000 conformations spanning the energy landscape. We partition the dataset into 70\% training, 15\% validation, and 15\% testing splits. Baselines include a standard VAE and a $\beta$-VAE with elevated regularization weight. Evaluation metrics encompass persistence diagram Wasserstein distances, root-mean-square deviation (RMSD) to reference structures, and Betti numbers estimated from generated samples.
+Our evaluation centers on a cyclic hexapeptide (cyclo-Ala$_6$) simulated with AMBER99SB force fields in implicit solvent. Replica exchange molecular dynamics with five replicas of 10~ns each yields 5{,}000 conformations spanning the energy landscape. We partition the dataset into 70\% training, 15\% validation, and 15\% testing splits. Baselines include a standard VAE and a $\beta$-VAE with elevated regularization weight. Evaluation metrics encompass
+\begin{enumerate}[label=\roman*)]
+    \item persistence diagram Wasserstein distances $W_{2}(\mathrm{PD}^{(1)}(X_{\text{MD}}), \mathrm{PD}^{(1)}(X_{\text{gen}}))$;
+    \item root-mean-square deviation (RMSD)
+    \begin{equation}
+        \mathrm{RMSD}(X, Y) = \sqrt{\frac{1}{n} \sum_{i=1}^n \big\| (T(X))_i - (T(Y))_i \big\|_2^2};
+        \label{eq:rmsd}
+    \end{equation}
+    \item estimated Betti numbers computed from generated samples via bootstrap aggregation of diagrams.
+\end{enumerate}
+The first metric reports the gap between real and generated loop signatures, the second measures geometric accuracy after optimal alignment, and the third checks whether the overall count of loop-like motions remains consistent. We further track the latent-space topology by computing persistence on UMAP embeddings and verifying that the dominant loop persists throughout training.
 
 \section{Results}
 \begin{figure}[t]
@@ -121,11 +169,11 @@ Our evaluation centers on a cyclic hexapeptide (cyclo-Ala$_6$) simulated with AM
 \end{table}
 
 \section{Discussion}
-Our experiments demonstrate that incorporating persistent homology into the training objective preserves critical topological features of molecular conformational spaces. The topological loss maintains the dominant $H_1$ loop associated with ring-flipping transitions, ensuring that generated ensembles respect known pathways. This preservation translates into qualitatively smoother latent interpolations and quantitatively improved Wasserstein distances.
+Our experiments demonstrate that incorporating persistent homology into the training objective preserves critical topological features of molecular conformational spaces. The topological loss of Eq.~\eqref{eq:topo-loss} maintains the dominant $H_1$ loop associated with ring-flipping transitions, ensuring that generated ensembles respect known pathways. This preservation translates into qualitatively smoother latent interpolations and quantitatively improved Wasserstein distances and RMSD scores.
 
-Despite these benefits, the approach introduces computational overhead stemming from repeated persistence computations. Efficient batching, sparsified filtrations, and entropic optimal transport relaxations mitigate but do not eliminate this cost. Additionally, selecting filtration parameters such as maximum edge length requires domain knowledge to balance sensitivity and robustness. Future research could explore adaptive filtrations and differentiable approximations that reduce gradient variance.
+Despite these benefits, the approach introduces computational overhead stemming from repeated persistence computations. Efficient batching, sparsified filtrations, and entropic optimal transport relaxations (Eq.~\eqref{eq:entropic-wasserstein}) mitigate but do not eliminate this cost. Additionally, selecting filtration parameters such as maximum edge length requires domain knowledge to balance sensitivity and robustness. Future research could explore adaptive filtrations and differentiable approximations that reduce gradient variance while preserving the guarantees of Eq.~\eqref{eq:stability}.
 
-Beyond cyclic peptides, topological regularization is applicable to larger biomolecular systems, including proteins with multiple domain motions and intrinsically disordered regions. Extending the framework to diffusion models or normalizing flows may further enhance generative fidelity. Multi-scale topology and conditional generation conditioned on desired Betti numbers offer promising avenues for design-oriented applications.
+Beyond cyclic peptides, topological regularization is applicable to larger biomolecular systems, including proteins with multiple domain motions and intrinsically disordered regions. The intuition carries over: each additional loop corresponds to an alternative transition route that should remain populated in the generated ensemble. Extending the framework to diffusion models or normalizing flows may further enhance generative fidelity. Multi-scale topology and conditional generation conditioned on desired Betti numbers offer promising avenues for design-oriented applications.
 
 \section{Conclusion}
 We presented the first integration of persistent homology-based regularization into molecular generative modeling. By penalizing deviations between persistence diagrams of real and generated conformations, our method preserves loop structures fundamental to cyclic peptide dynamics. The resulting models generate ensembles that remain faithful to the physical manifold, enabling more realistic sampling and improved downstream utility. Topological regularization thus opens a principled pathway toward topology-aware molecular generative models.
@@ -144,6 +192,8 @@ We presented the first integration of persistent homology-based regularization i
 \bibitem{song2021score} Y. Song, J. Sohl-Dickstein, D. P. Kingma, \emph{et al.} Score-based generative modeling through stochastic differential equations. In \emph{International Conference on Learning Representations}, 2021.
 \bibitem{lipman2023flow} Y. Lipman, R. T. Q. Chen, T. Kurutach, \emph{et al.} Flow matching for generative modeling. In \emph{International Conference on Learning Representations}, 2023.
 \bibitem{sommers2023tda} G. Sommers and M. H. Freedman. Topological data analysis of biomolecular conformations. \emph{Annual Review of Biophysics}, 52:1--24, 2023.
+\bibitem{cuturi2013sinkhorn} M. Cuturi. Sinkhorn distances: Lightspeed computation of optimal transport. In \emph{Advances in Neural Information Processing Systems}, 2013.
+\bibitem{adams2017persistence} H. Adams, T. Emerson, M. Kirby, \emph{et al.} Persistence images: A stable vector representation of persistent homology. \emph{Journal of Machine Learning Research}, 18(8):1--35, 2017.
 \end{thebibliography}
 
 \end{document}
