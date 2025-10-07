@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, MutableMapping, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, MutableMapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -41,9 +41,28 @@ class DiagramBatch:
         return len(self.diagrams)
 
     def by_dimension(self, dim: int) -> List[np.ndarray]:
+        """Return diagrams for a specific homology dimension across the batch."""
+
         if dim not in self.homology_dims:
             raise KeyError(f"Homology dimension {dim} was not computed.")
         return [diagram.get(dim, np.empty((0, 2))) for diagram in self.diagrams]
+
+    def iter_pairs(self, dims: Optional[Iterable[int]] = None):
+        """Yield ``(dim, diagram)`` pairs for convenient iteration.
+
+        Parameters
+        ----------
+        dims:
+            Optional iterable restricting the dimensions that are yielded. By
+            default all dimensions present in :attr:`homology_dims` are used.
+        """
+
+        selected = self.homology_dims if dims is None else tuple(dims)
+        for dim in selected:
+            if dim not in self.homology_dims:
+                raise KeyError(f"Homology dimension {dim} was not computed.")
+            for diagram in self.diagrams:
+                yield dim, diagram.get(dim, np.empty((0, 2)))
 
 
 def _to_numpy(array: ArrayLike) -> np.ndarray:
@@ -191,3 +210,6 @@ def compute_persistence_diagrams(
         metadata["max_edge_length"] = float(max_edge_length)
 
     return DiagramBatch(diagrams=diagrams, homology_dims=homology_dims, metadata=metadata)
+
+
+__all__ = ["DiagramBatch", "compute_persistence_diagrams"]
