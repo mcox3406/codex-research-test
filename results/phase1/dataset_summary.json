@@ -1,0 +1,11 @@
+{
+  "num_samples": 5000,
+  "num_atoms": 60,
+  "rmsd_mean": 0.5309863090515137,
+  "rmsd_std": 0.16385799646377563,
+  "rg_mean": 1.900752305984497,
+  "rg_std": 0.044412966817617416,
+  "h1_count": 0,
+  "h1_max_persistence": 0.0,
+  "h1_mean_persistence": 0.0
+}
