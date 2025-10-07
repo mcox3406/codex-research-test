@@ -50,6 +50,10 @@ The validation script produces persistence diagrams, barcodes, RMSD/Rg
 histograms, PCA projections, and a JSON summary that can be inserted directly
 into Section 4 of the manuscript.
 
+> **Runtime note:** Running the preferred OpenMM workflow with five replicas of
+> 10~ns each (50~ns total for the $\sim$60-atom cyclic hexapeptide) took roughly
+> 50--55 minutes on commodity GPU hardware (equivalent to about 1340~ns/day).
+
 ## Core Idea
 
 **Problem:** Standard VAEs/diffusion models generate unrealistic conformations because they don't preserve the global topology of conformational space (e.g., loop structures from cyclic transitions).
