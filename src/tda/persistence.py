@@ -82,16 +82,31 @@ def _pairwise_distances(points: np.ndarray) -> np.ndarray:
     return dists
 
 
+def _torus_pairwise_distances(points: np.ndarray) -> np.ndarray:
+    """Pairwise distances on a flat torus with ``[0, 2π)`` coordinates."""
+
+    wrapped = np.mod(points, 2.0 * np.pi)
+    diff = np.abs(wrapped[:, None, :] - wrapped[None, :, :])
+    diff = np.minimum(diff, 2.0 * np.pi - diff)
+    return np.sqrt(np.sum(diff * diff, axis=-1))
+
+
 def _compute_with_gudhi(
-    points: np.ndarray,
+    points: Optional[np.ndarray],
     homology_dims: Sequence[int],
     max_edge_length: Optional[float],
+    dist_matrix: Optional[np.ndarray] = None,
 ) -> Dict[int, np.ndarray]:
     if gudhi is None:  # pragma: no cover - guard at runtime
         raise ImportError("gudhi is required for the 'gudhi' backend but is not installed.")
 
     max_dim = max(homology_dims)
-    rips_complex = gudhi.RipsComplex(points=points, max_edge_length=max_edge_length)
+    if dist_matrix is not None:
+        rips_complex = gudhi.RipsComplex(distance_matrix=dist_matrix, max_edge_length=max_edge_length)
+    else:
+        if points is None:
+            raise ValueError("Points must be provided when distance matrix is not supplied.")
+        rips_complex = gudhi.RipsComplex(points=points, max_edge_length=max_edge_length)
     simplex_tree = rips_complex.create_simplex_tree(max_dimension=max_dim)
     simplex_tree.persistence()
 
@@ -131,14 +146,17 @@ def compute_persistence_diagrams(
     max_edge_length: Optional[float] = None,
     backend: str = "auto",
     center: bool = True,
+    geometry: str = "cartesian",
 ) -> DiagramBatch:
     """Compute persistence diagrams for a batch of conformations.
 
     Parameters
     ----------
     conformations:
-        Array of shape ``(batch, n_atoms, 3)`` containing Cartesian coordinates.
-        ``numpy.ndarray`` and ``torch.Tensor`` inputs are supported.
+        Array of shape ``(batch, n_points, d)`` containing point clouds. When
+        ``geometry='cartesian'`` the final dimension ``d`` must equal 3. For
+        ``geometry='dihedral'`` the coordinates are assumed to be angles in
+        radians on ``[0, 2π)``.
     homology_dims:
         Iterable of homology dimensions to compute (e.g., ``(0, 1)``).
     max_edge_length:
@@ -149,7 +167,12 @@ def compute_persistence_diagrams(
         Ripser fallback, or ``"auto"`` to use the best available option.
     center:
         Whether to remove translational degrees of freedom before computing
-        distances. Recommended for molecular systems.
+        distances. Ignored when ``geometry!='cartesian'``.
+    geometry:
+        Metric definition for the point cloud. ``'cartesian'`` applies the usual
+        Euclidean metric after optional centering. ``'dihedral'`` interprets the
+        coordinates as periodic angles on a flat torus and uses the associated
+        geodesic distance.
 
     Returns
     -------
@@ -162,9 +185,12 @@ def compute_persistence_diagrams(
         raise ValueError("At least one homology dimension must be specified.")
 
     coords = _to_numpy(conformations)
-    if coords.ndim != 3 or coords.shape[-1] != 3:
+    if coords.ndim == 2:
+        coords = coords[None, ...]
+
+    if coords.ndim != 3:
         raise ValueError(
-            "Conformations must have shape (batch, n_points, 3); received "
+            "Conformations must have shape (batch, n_points, d); received "
             f"shape {coords.shape}."
         )
 
@@ -183,28 +209,38 @@ def compute_persistence_diagrams(
 
     for idx in range(batch_size):
         points = coords[idx]
-        if center:
-            points = _center_points(points)
+        dist_matrix: Optional[np.ndarray] = None
 
-        max_edge = max_edge_length
-        if max_edge is None:
-            dmatrix = _pairwise_distances(points)
-            max_edge = float(np.max(dmatrix))
+        if geometry == "cartesian":
+            if points.shape[-1] != 3:
+                raise ValueError(
+                    "Cartesian geometry expects point dimension 3; received "
+                    f"{points.shape[-1]}."
+                )
+            if center:
+                points = _center_points(points)
+            if max_edge_length is None or backend == "ripser":
+                dist_matrix = _pairwise_distances(points)
+            max_edge = max_edge_length if max_edge_length is not None else float(np.max(dist_matrix))
+        elif geometry == "dihedral":
+            dist_matrix = _torus_pairwise_distances(points)
+            max_edge = max_edge_length if max_edge_length is not None else float(np.max(dist_matrix))
         else:
-            dmatrix = None
+            raise ValueError(f"Unsupported geometry '{geometry}'.")
 
         if backend == "gudhi":
-            diagrams.append(_compute_with_gudhi(points, homology_dims, max_edge))
+            diagrams.append(_compute_with_gudhi(points if geometry == "cartesian" else None, homology_dims, max_edge, dist_matrix))
         elif backend == "ripser":
-            if dmatrix is None:
-                dmatrix = _pairwise_distances(points)
-            diagrams.append(_compute_with_ripser(points, homology_dims, max_edge, dmatrix))
+            if dist_matrix is None:
+                dist_matrix = _pairwise_distances(points)
+            diagrams.append(_compute_with_ripser(points, homology_dims, max_edge, dist_matrix))
         else:
             raise ValueError(f"Unsupported backend '{backend}'.")
 
     metadata: MutableMapping[str, Union[int, float, str]] = {
         "backend": backend,
         "homology_dims": homology_dims,
+        "geometry": geometry,
     }
     if max_edge_length is not None:
         metadata["max_edge_length"] = float(max_edge_length)

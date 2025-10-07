@@ -40,11 +40,14 @@ After generating a dataset (either MD or MC), run:
 ```
 python scripts/phase1/validate_dataset.py \
     --dataset data/cyclo_ala6_md.npy \
+    --topology data/templates/cyclo_ala6_initial.pdb \
     --output-dir results/phase1
 ```
 
 This produces the figures and summary statistics required for Figure 1 and the
-paper narrative:
+paper narrative. The persistence calculations now operate on backbone dihedral
+angles (φ/ψ) to capture cyclic transitions that are invisible in Cartesian
+space:
 
 - `ground_truth_pd.png` / `ground_truth_barcode.png`
 - `rmsd_distribution.png`, `rg_distribution.png`
@@ -58,5 +61,7 @@ All outputs land in `results/phase1/` by default.
 - Install dependencies via `conda env create -f environment.yml` before running.
 - For HPC clusters, wrap the MD script in an sbatch file; the script is
   thread-safe and can be parallelised across replicas.
+- The validation script requires the same topology (PDB) used for data
+  generation so it can compute φ/ψ dihedrals prior to persistence analysis.
 - Validate a small subset first using `--max-samples 500` when running the
   validation script.
