@@ -28,15 +28,13 @@ from typing import Dict
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.decomposition import PCA
-try:  # Optional topological backends for dataset-level PDs
-    import gudhi
-except Exception:  # pragma: no cover - dependency optional at runtime
-    gudhi = None  # type: ignore
-
 try:
-    from ripser import ripser
-except Exception:  # pragma: no cover - dependency optional at runtime
-    ripser = None  # type: ignore
+    import mdtraj as md
+except Exception:  # pragma: no cover - optional dependency at runtime
+    md = None  # type: ignore
+
+from src.data import extract_dihedrals
+from src.tda.persistence import compute_persistence_diagrams
 
 
 def _center_structures(coords: np.ndarray) -> np.ndarray:
@@ -133,42 +131,30 @@ def _save_summary(stats: Dict[str, float], output: pathlib.Path) -> None:
     output.write_text(json.dumps(stats, indent=2))
 
 
-def _dataset_persistence(points: np.ndarray, max_dim: int = 1) -> Dict[int, np.ndarray]:
-    """Compute persistence diagrams for the dataset treated as a point cloud."""
-
-    if gudhi is not None:
-        rips = gudhi.RipsComplex(points=points)
-        st = rips.create_simplex_tree(max_dimension=max_dim)
-        st.persistence()
-        diagrams: Dict[int, np.ndarray] = {}
-        for dim in range(max_dim + 1):
-            intervals = st.persistence_intervals_in_dimension(dim)
-            diagrams[dim] = np.asarray(intervals, dtype=np.float64)
-        return diagrams
-
-    if ripser is not None:
-        res = ripser(points, maxdim=max_dim)
-        diagrams = {}
-        for dim in range(max_dim + 1):
-            diag = res["dgms"][dim] if dim < len(res["dgms"]) else np.empty((0, 2))
-            diagrams[dim] = np.asarray(diag, dtype=np.float64)
-        return diagrams
-
-    raise RuntimeError(
-        "Neither GUDHI nor ripser is installed. Install one of them to compute dataset persistence diagrams."
-    )
-
-
-def validate_dataset(dataset_path: pathlib.Path, output_dir: pathlib.Path, max_samples: int | None = None) -> None:
+def validate_dataset(
+    dataset_path: pathlib.Path,
+    output_dir: pathlib.Path,
+    topology_path: pathlib.Path,
+    max_samples: int | None = None,
+) -> None:
     coords = np.load(dataset_path)
     if max_samples is not None and max_samples < coords.shape[0]:
         coords = coords[:max_samples]
 
     coords = _center_structures(coords)
+    if md is None:
+        raise ImportError("mdtraj is required to extract dihedral angles for topology validation.")
+    topology = md.load(str(topology_path)).topology
 
-    # Dataset-level persistence (each conformation treated as a single point)
-    flattened = coords.reshape(coords.shape[0], -1)
-    dataset_diagrams = _dataset_persistence(flattened, max_dim=1)
+    dihedral_cloud = extract_dihedrals(coords, topology=topology)
+    diagrams_batch = compute_persistence_diagrams(
+        dihedral_cloud[None, ...],
+        homology_dims=(0, 1),
+        backend="auto",
+        center=False,
+        geometry="dihedral",
+    )
+    dataset_diagrams = diagrams_batch.diagrams[0]
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _plot_persistence(dataset_diagrams, output_dir / "ground_truth")
@@ -187,6 +173,7 @@ def validate_dataset(dataset_path: pathlib.Path, output_dir: pathlib.Path, max_s
     stats = {
         "num_samples": int(coords.shape[0]),
         "num_atoms": int(coords.shape[1]),
+        "num_dihedral_features": int(dihedral_cloud.shape[1]),
         "rmsd_mean": float(rmsd.mean()),
         "rmsd_std": float(rmsd.std()),
         "rg_mean": float(rg.mean()),
@@ -201,6 +188,12 @@ def validate_dataset(dataset_path: pathlib.Path, output_dir: pathlib.Path, max_s
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate cyclic hexapeptide dataset for Phase 1")
     parser.add_argument("--dataset", type=pathlib.Path, required=True, help="Path to NumPy array of conformations")
+    parser.add_argument(
+        "--topology",
+        type=pathlib.Path,
+        required=True,
+        help="Topology file (e.g., input PDB) used to define backbone dihedrals",
+    )
     parser.add_argument(
         "--output-dir",
         type=pathlib.Path,
@@ -217,7 +210,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    validate_dataset(args.dataset, args.output_dir, max_samples=args.max_samples)
+    validate_dataset(args.dataset, args.output_dir, args.topology, max_samples=args.max_samples)
 
 
 if __name__ == "__main__":
