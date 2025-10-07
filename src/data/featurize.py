@@ -168,7 +168,47 @@ def extract_dihedrals(
     return _normalize_angles(angles, wrap=wrap)
 
 
+def extract_phi_psi(
+    coords: np.ndarray,
+    topology: "md.Topology",
+    *,
+    wrap: bool = True,
+) -> np.ndarray:
+    """Convenience wrapper returning the single (ϕ, ψ) pair for alanine dipeptide.
+
+    Parameters
+    ----------
+    coords:
+        Coordinate array with shape ``(n_samples, n_atoms, 3)``.
+    topology:
+        MDTraj topology describing the atom ordering consistent with ``coords``.
+    wrap:
+        Whether to wrap the returned angles into ``[0, 2π)``.
+
+    Returns
+    -------
+    np.ndarray
+        Array of shape ``(n_samples, 2)`` containing ``(ϕ, ψ)`` angles in radians.
+    """
+
+    if md is None:  # pragma: no cover - mdtraj optional at runtime
+        raise ImportError("mdtraj is required to compute phi/psi dihedrals.")
+
+    array = np.asarray(coords, dtype=float)
+    if array.ndim != 3 or array.shape[-1] != 3:
+        raise ValueError("coords must have shape (n_samples, n_atoms, 3).")
+
+    traj = md.Trajectory(array, topology)
+    _, phi = md.compute_phi(traj)
+    _, psi = md.compute_psi(traj)
+    if phi.shape[1] == 0 or psi.shape[1] == 0:
+        raise ValueError("Topology does not define phi/psi dihedrals.")
+    angles = np.stack([phi[:, 0], psi[:, 0]], axis=1)
+    return _normalize_angles(angles, wrap=wrap)
+
+
 __all__ = [
     "DihedralSpecification",
     "extract_dihedrals",
+    "extract_phi_psi",
 ]

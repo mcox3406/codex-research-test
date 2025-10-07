@@ -1,9 +1,11 @@
-"""Variational auto-encoder tailored for molecular conformations."""
+"""Variational auto-encoder tailored for molecular conformations and features."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+import operator
+from functools import reduce
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -31,34 +33,61 @@ def _build_mlp(input_dim: int, hidden_dims: Sequence[int], output_dim: int) -> n
 
 
 class MolecularVAE(nn.Module):
-    """Simple coordinate-space VAE with optional geometric constraints."""
+    """Simple VAE that supports both Cartesian and featurised inputs."""
 
     def __init__(
         self,
-        n_atoms: int,
+        n_atoms: Optional[int] = None,
+        *,
+        feature_shape: Optional[Sequence[int]] = None,
         latent_dim: int = 8,
         hidden_dims: Sequence[int] = (256, 128, 64),
         enforce_constraints: bool = False,
         bond_indices: Optional[Sequence[Tuple[int, int]]] = None,
         target_bond_lengths: Optional[Sequence[float]] = None,
         coordinate_scaling: float = 1.0,
+        geometry: str = "cartesian",
+        center_inputs: bool = True,
     ) -> None:
         super().__init__()
-        if n_atoms <= 0:
-            raise ValueError("n_atoms must be positive.")
         if latent_dim <= 0:
             raise ValueError("latent_dim must be positive.")
-        self.n_atoms = int(n_atoms)
+        if feature_shape is None:
+            if n_atoms is None or n_atoms <= 0:
+                raise ValueError("Either feature_shape or a positive n_atoms must be provided.")
+            feature_shape = (int(n_atoms), 3)
+        else:
+            feature_shape = tuple(int(dim) for dim in feature_shape)
+            if any(dim <= 0 for dim in feature_shape):
+                raise ValueError("feature_shape dimensions must be positive integers.")
+            if n_atoms is not None and geometry == "cartesian" and reduce(operator.mul, feature_shape, 1) != n_atoms * 3:
+                raise ValueError("Provided feature_shape is inconsistent with n_atoms * 3.")
+
+        self.geometry = geometry
+        self.feature_shape = tuple(feature_shape)
         self.latent_dim = int(latent_dim)
-        self.input_dim = self.n_atoms * 3
-        self.enforce_constraints = enforce_constraints
+        self.center_inputs = bool(center_inputs)
         self.coordinate_scaling = float(coordinate_scaling)
+
+        if self.geometry not in {"cartesian", "dihedral", "features"}:
+            raise ValueError("geometry must be 'cartesian', 'dihedral', or 'features'.")
+
+        self.n_atoms: Optional[int]
+        if self.geometry == "cartesian":
+            if len(self.feature_shape) != 2 or self.feature_shape[1] != 3:
+                raise ValueError("Cartesian geometry expects feature_shape=(n_atoms, 3).")
+            self.n_atoms = int(self.feature_shape[0])
+        else:
+            self.n_atoms = n_atoms
+
+        self.input_dim = int(reduce(operator.mul, self.feature_shape, 1))
+        self.enforce_constraints = enforce_constraints and self.geometry == "cartesian"
 
         self.encoder = _build_mlp(self.input_dim, hidden_dims, 2 * self.latent_dim)
         decoder_hidden = tuple(reversed(tuple(hidden_dims)))
         self.decoder = _build_mlp(self.latent_dim, decoder_hidden, self.input_dim)
 
-        if enforce_constraints:
+        if self.enforce_constraints:
             if bond_indices is None or target_bond_lengths is None:
                 raise ValueError("Constraint enforcement requires bond indices and target lengths.")
             if len(bond_indices) != len(target_bond_lengths):
@@ -88,8 +117,10 @@ class MolecularVAE(nn.Module):
 
     def decode(self, z: Tensor) -> Tensor:
         flat = self.decoder(z)
-        coords = flat.view(z.shape[0], self.n_atoms, 3)
-        if not math.isclose(self.coordinate_scaling, 1.0, rel_tol=1e-6, abs_tol=1e-9):
+        coords = flat.view(z.shape[0], *self.feature_shape)
+        if self.geometry == "cartesian" and not math.isclose(
+            self.coordinate_scaling, 1.0, rel_tol=1e-6, abs_tol=1e-9
+        ):
             coords = coords * self.coordinate_scaling
         return coords
 
@@ -119,12 +150,15 @@ class MolecularVAE(nn.Module):
         return loss
 
     def _flatten(self, x: Tensor) -> Tensor:
-        if x.ndim != 3 or x.shape[1] != self.n_atoms or x.shape[2] != 3:
+        if tuple(x.shape[1:]) != self.feature_shape:
             raise ValueError(
-                f"Input must have shape (batch, {self.n_atoms}, 3); received {tuple(x.shape)}."
+                "Input must have shape (batch, %s); received %s." % (self.feature_shape, tuple(x.shape[1:]))
             )
-        centered = x - x.mean(dim=1, keepdim=True)
-        return centered.view(x.shape[0], -1)
+        if self.geometry == "cartesian" and self.center_inputs:
+            centered = x - x.mean(dim=1, keepdim=True)
+        else:
+            centered = x
+        return centered.reshape(x.shape[0], -1)
 
 
 def vae_loss(

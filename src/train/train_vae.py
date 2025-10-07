@@ -40,12 +40,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "val_fraction": 0.15,
         "test_fraction": 0.15,
         "seed": 123,
+        "representation": "cartesian",
+        "geometry": "cartesian",
     },
     "model": {
         "latent_dim": 8,
         "hidden_dims": [256, 128, 64],
         "enforce_constraints": False,
         "coordinate_scaling": 1.0,
+        "center_inputs": True,
     },
     "training": {
         "epochs": 5,
@@ -67,6 +70,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_edge_length": 15.0,
         "update_every": 10,
         "backend": "auto",
+        "center": True,
+        "geometry": "cartesian",
     },
     "logging": {
         "backend": "tensorboard",
@@ -84,14 +89,24 @@ class TrainState:
 
 
 class ConformationDataset(Dataset[Tensor]):
-    """Simple dataset wrapping a numpy array of conformations."""
+    """Dataset wrapper that supports Cartesian coordinates and feature vectors."""
 
-    def __init__(self, array: np.ndarray) -> None:
-        if array.ndim != 3 or array.shape[-1] != 3:
-            raise ValueError(
-                "Conformations must have shape (n_samples, n_atoms, 3)."
-            )
-        self.data = torch.as_tensor(array, dtype=torch.get_default_dtype())
+    def __init__(self, array: np.ndarray, representation: str = "cartesian") -> None:
+        np_array = np.asarray(array, dtype=float)
+        representation = representation.lower()
+        if representation == "cartesian":
+            if np_array.ndim != 3 or np_array.shape[-1] != 3:
+                raise ValueError(
+                    "Cartesian representation expects shape (n_samples, n_atoms, 3)."
+                )
+        else:
+            if np_array.ndim != 2:
+                raise ValueError(
+                    "Feature representation expects shape (n_samples, feature_dim)."
+                )
+        self.representation = representation
+        self.data = torch.as_tensor(np_array, dtype=torch.get_default_dtype())
+        self.feature_shape: Tuple[int, ...] = tuple(self.data.shape[1:])
 
     def __len__(self) -> int:  # pragma: no cover - trivial
         return self.data.shape[0]
@@ -178,7 +193,9 @@ def _split_dataset(dataset: ConformationDataset, train_fraction: float, val_frac
     return torch.utils.data.random_split(dataset, [n_train, n_val, n_test], generator=generator)
 
 
-def _prepare_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader[Tensor], Optional[DataLoader[Tensor]], Optional[DataLoader[Tensor]], int]:
+def _prepare_dataloaders(
+    config: Dict[str, Any]
+) -> Tuple[DataLoader[Tensor], Optional[DataLoader[Tensor]], Optional[DataLoader[Tensor]], Tuple[int, ...]]:
     dataset_cfg = config["dataset"]
     path = Path(dataset_cfg["path"])
     if not path.exists():
@@ -186,7 +203,8 @@ def _prepare_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader[Tensor], Op
             f"Dataset not found at {path}. Generate it with data/generate_synthetic_hexapeptide.py."
         )
     array = np.load(path)
-    dataset = ConformationDataset(array)
+    representation = str(dataset_cfg.get("representation", "cartesian")).lower()
+    dataset = ConformationDataset(array, representation=representation)
     train_set, val_set, test_set = _split_dataset(
         dataset,
         train_fraction=float(dataset_cfg.get("train_fraction", 0.7)),
@@ -197,13 +215,14 @@ def _prepare_dataloaders(config: Dict[str, Any]) -> Tuple[DataLoader[Tensor], Op
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=False)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False) if len(val_set) > 0 else None
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False) if len(test_set) > 0 else None
-    n_atoms = dataset.data.shape[1]
-    return train_loader, val_loader, test_loader, n_atoms
+    feature_shape = dataset.feature_shape
+    return train_loader, val_loader, test_loader, feature_shape
 
 
-def _create_model(config: Dict[str, Any], n_atoms: int) -> MolecularVAE:
+def _create_model(config: Dict[str, Any], feature_shape: Tuple[int, ...]) -> MolecularVAE:
     model_cfg = copy.deepcopy(config["model"])
-    model_cfg["n_atoms"] = n_atoms
+    model_cfg.setdefault("feature_shape", feature_shape)
+    model_cfg.setdefault("geometry", config["dataset"].get("geometry", "cartesian"))
     return MolecularVAE(**model_cfg)
 
 
@@ -211,10 +230,14 @@ def _create_topological_loss(config: Dict[str, Any]) -> Optional[TopologicalLoss
     topo_cfg = config.get("topology", {})
     if not topo_cfg.get("enabled", False):
         return None
+    center = bool(topo_cfg.get("center", True))
+    geometry = topo_cfg.get("geometry", config["dataset"].get("geometry", "cartesian"))
     return TopologicalLoss(
         homology_dims=tuple(topo_cfg.get("homology_dims", (1,))),
         max_edge_length=topo_cfg.get("max_edge_length"),
         backend=topo_cfg.get("backend", "auto"),
+        center=center,
+        geometry=geometry,
         update_every=int(topo_cfg.get("update_every", 1)),
     )
 
@@ -261,10 +284,17 @@ def train(config: Dict[str, Any], *, resume: Optional[Path] = None) -> Dict[str,
 
     device = _device_from_config(config)
 
-    train_loader, val_loader, _, n_atoms = _prepare_dataloaders(config)
-    config["model"]["n_atoms"] = n_atoms
+    train_loader, val_loader, _, feature_shape = _prepare_dataloaders(config)
+    dataset_geometry = config["dataset"].get("geometry", "cartesian")
+    config["model"]["feature_shape"] = list(feature_shape)
+    config["model"].setdefault("geometry", dataset_geometry)
+    if dataset_geometry == "dihedral":
+        config["model"].setdefault("center_inputs", False)
+    config.setdefault("topology", {})
+    config["topology"].setdefault("geometry", dataset_geometry)
 
-    model = _create_model(config, n_atoms).to(device)
+    
+    model = _create_model(config, feature_shape).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=float(training_cfg.get("learning_rate", 1e-3)),

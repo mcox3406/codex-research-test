@@ -11,17 +11,27 @@ Enforce that generated molecular conformations preserve the topological structur
 conda env create -f environment.yml
 conda activate topo-gen
 
-# Generate data (cyclic peptide MD → 5K conformations)
-python src/data/generate_cyclopeptide.py --output data/cyclo_hexa_ala.npy
+# Generate alanine dipeptide φ/ψ dataset (manual heavy job)
+python scripts/phase1/run_openmm_alanine_dipeptide.py \
+  --input-pdb data/templates/alanine_dipeptide.pdb \
+  --output-dir data/alanine_dipeptide
 
-# Train baseline VAE
-python src/train/train_vae.py --config configs/vae_base.yaml
+# Validate topology in φ/ψ space (produces Ramachandran + PD plots)
+python scripts/phase1/validate_alanine_dipeptide.py \
+  --phi-psi data/alanine_dipeptide/phi_psi.npy \
+  --output-dir results/alanine_dipeptide
 
-# Train with topological regularization
-python src/train/train_vae.py --config configs/topo_reg.yaml
+# Train baseline and topo-regularised VAEs
+python src/train/train_vae.py --config configs/alanine_dipeptide_baseline.yaml
+python src/train/train_vae.py --config configs/alanine_dipeptide_high_beta.yaml
+python src/train/train_vae.py --config configs/alanine_dipeptide_topo.yaml
 
 # Evaluate topology preservation
-python src/train/eval_topology.py --model checkpoints/topo_vae.pt --n_samples 1000
+python src/train/eval_topology.py \
+  checkpoints/alanine_dipeptide/topo/checkpoint_final.pt \
+  --config configs/alanine_dipeptide_topo.yaml \
+  --num-samples 2000 \
+  --output-dir results/alanine_eval
 ```
 
 ## Phase 1: Data generation & validation
@@ -53,6 +63,35 @@ into Section 4 of the manuscript.
 > **Runtime note:** Running the preferred OpenMM workflow with five replicas of
 > 10~ns each (50~ns total for the $\sim$60-atom cyclic hexapeptide) took roughly
 > 50--55 minutes on commodity GPU hardware (equivalent to about 1340~ns/day).
+
+### Alanine dipeptide (Ramachandran topology)
+
+Because the cyclic hexapeptide dataset exhibited weak $H_1$ structure in
+dihedral space, we provide an alanine dipeptide pipeline tailored for
+Ramachandran analyses:
+
+```bash
+# 20 ns implicit-solvent MD at 500 K (produces 20,000 frames / 2D angles)
+python scripts/phase1/run_openmm_alanine_dipeptide.py \
+  --input-pdb data/templates/alanine_dipeptide.pdb \
+  --output-dir data/alanine_dipeptide \
+  --ns-total 20 \
+  --save-interval-ps 1
+
+# Validate φ/ψ coverage, persistence, and basin occupancies
+python scripts/phase1/validate_alanine_dipeptide.py \
+  --phi-psi data/alanine_dipeptide/phi_psi.npy \
+  --output-dir results/alanine_dipeptide
+
+# Train/evaluate VAEs directly in φ/ψ space
+python src/train/train_vae.py --config configs/alanine_dipeptide_baseline.yaml
+python src/train/train_vae.py --config configs/alanine_dipeptide_high_beta.yaml
+python src/train/train_vae.py --config configs/alanine_dipeptide_topo.yaml
+```
+
+The validation routine outputs a Ramachandran density, torus-aware persistence
+diagrams, and occupancy statistics for the canonical $\alpha_R$, $C7_{eq}$, and
+$\alpha_L$ basins to confirm the presence of persistent $H_1$ loops.
 
 ## Core Idea
 
