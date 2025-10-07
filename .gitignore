@@ -210,8 +210,6 @@ __marimo__/
 *.aux
 *.log
 *.out
-*.pdf
-*.tex
 *.toc
 *.bbl
 *.blg
