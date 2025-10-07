@@ -27,10 +27,13 @@ Diagram = Union[np.ndarray, "Tensor"]
 
 def _ensure_numpy(diagram: Diagram) -> np.ndarray:
     if torch is not None and isinstance(diagram, torch.Tensor):
-        return diagram.detach().cpu().numpy()
-    array = np.asarray(diagram, dtype=np.float64)
+        array = diagram.detach().cpu().numpy()
+    else:
+        array = np.asarray(diagram, dtype=np.float64)
     if array.ndim == 1:
         array = array.reshape(-1, 2)
+    if array.shape[-1] != 2:
+        raise ValueError("Persistence diagrams must have shape (n_points, 2).")
     return array
 
 
@@ -44,6 +47,8 @@ def _ensure_tensor(diagram: Diagram, like: Optional[Tensor] = None) -> Tensor:
     array = np.asarray(diagram, dtype=np.float64)
     if array.ndim == 1:
         array = array.reshape(-1, 2)
+    if array.shape[-1] != 2:
+        raise ValueError("Persistence diagrams must have shape (n_points, 2).")
     dtype = like.dtype if like is not None else torch.get_default_dtype()
     if like is not None:
         return torch.as_tensor(array, dtype=dtype, device=like.device)
@@ -114,29 +119,53 @@ def _hungarian(cost_matrix: np.ndarray) -> float:
     return float(cost_matrix[row_ind, col_ind].sum())
 
 
+def _uniform_weights(size: int, like: Tensor) -> Tensor:
+    return torch.full((size,), 1.0 / max(size, 1), dtype=like.dtype, device=like.device)
+
+
 def _sinkhorn(
     cost_matrix: Tensor,
     order: float,
     epsilon: float,
-    max_iterations: int = 100,
+    max_iterations: int = 200,
     tolerance: float = 1e-6,
+    weights_a: Optional[Tensor] = None,
+    weights_b: Optional[Tensor] = None,
 ) -> Tensor:
     if torch is None:
         raise RuntimeError("PyTorch is required for the Sinkhorn approximation.")
-    n = cost_matrix.shape[0]
-    weights = torch.ones(n, dtype=cost_matrix.dtype, device=cost_matrix.device)
-    weights = weights / weights.sum()
-    K = torch.exp(-cost_matrix / epsilon)
-    K = torch.clamp(K, min=1e-12)
-    u = torch.ones_like(weights)
-    v = torch.ones_like(weights)
+
+    if cost_matrix.numel() == 0:
+        return torch.zeros((), dtype=cost_matrix.dtype, device=cost_matrix.device)
+
+    n, m = cost_matrix.shape
+    if n != m:
+        raise ValueError("Extended persistence cost matrices must be square.")
+
+    if weights_a is None:
+        weights_a = _uniform_weights(n, cost_matrix)
+    if weights_b is None:
+        weights_b = _uniform_weights(m, cost_matrix)
+
+    weights_a = weights_a / weights_a.sum()
+    weights_b = weights_b / weights_b.sum()
+
+    log_weights_a = torch.log(weights_a.clamp_min(1e-12))
+    log_weights_b = torch.log(weights_b.clamp_min(1e-12))
+
+    log_K = -cost_matrix / epsilon
+
+    u = torch.zeros_like(weights_a)
+    v = torch.zeros_like(weights_b)
+
     for _ in range(max_iterations):
         u_prev = u
-        u = weights / (K @ v).clamp_min(1e-12)
-        v = weights / (K.t() @ u).clamp_min(1e-12)
+        u = log_weights_a - torch.logsumexp(log_K + v.unsqueeze(0), dim=1)
+        v = log_weights_b - torch.logsumexp((log_K + u.unsqueeze(1)), dim=0)
         if torch.max(torch.abs(u - u_prev)) < tolerance:
             break
-    transport = torch.diag(u) @ K @ torch.diag(v)
+
+    transport = torch.exp(log_K + u.unsqueeze(1) + v.unsqueeze(0))
     total = torch.sum(transport * cost_matrix)
     return total.clamp_min(0.0).pow(1.0 / order)
 
@@ -147,8 +176,28 @@ def wasserstein_distance(
     order: float = 2.0,
     method: str = "auto",
     epsilon: float = 5e-3,
+    max_iterations: int = 200,
+    tolerance: float = 1e-6,
 ) -> Union[float, Tensor]:
-    """Compute the Wasserstein distance between two persistence diagrams."""
+    """Compute the Wasserstein distance between two persistence diagrams.
+
+    Parameters
+    ----------
+    diagram_a, diagram_b:
+        Persistence diagrams with shape ``(n_points, 2)``. ``numpy.ndarray`` or
+        ``torch.Tensor`` inputs are supported.
+    order:
+        Wasserstein order ``p``. Must satisfy ``p >= 1``.
+    method:
+        ``"exact"`` to force the Hungarian solver, ``"sinkhorn"`` for the
+        entropic relaxation, or ``"auto"`` to select an appropriate backend.
+    epsilon:
+        Entropic regularisation strength for ``method="sinkhorn"``.
+    max_iterations:
+        Maximum number of Sinkhorn iterations when using the entropic solver.
+    tolerance:
+        Convergence threshold for the Sinkhorn fixed-point updates.
+    """
 
     if order < 1:
         raise ValueError("Wasserstein order must be >= 1.")
@@ -156,8 +205,24 @@ def wasserstein_distance(
     if torch is not None and (
         isinstance(diagram_a, torch.Tensor) or isinstance(diagram_b, torch.Tensor)
     ):
-        return _wasserstein_torch(diagram_a, diagram_b, order=order, method=method, epsilon=epsilon)
-    return _wasserstein_numpy(diagram_a, diagram_b, order=order, method=method, epsilon=epsilon)
+        return _wasserstein_torch(
+            diagram_a,
+            diagram_b,
+            order=order,
+            method=method,
+            epsilon=epsilon,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+        )
+    return _wasserstein_numpy(
+        diagram_a,
+        diagram_b,
+        order=order,
+        method=method,
+        epsilon=epsilon,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+    )
 
 
 def _wasserstein_numpy(
@@ -166,6 +231,8 @@ def _wasserstein_numpy(
     order: float,
     method: str,
     epsilon: float,
+    max_iterations: int,
+    tolerance: float,
 ) -> float:
     a = _ensure_numpy(diagram_a)
     b = _ensure_numpy(diagram_b)
@@ -185,7 +252,15 @@ def _wasserstein_numpy(
 
     if torch is None:
         raise RuntimeError("PyTorch is required for Sinkhorn Wasserstein computation.")
-    tensor_dist = _wasserstein_torch(a, b, order=order, method="sinkhorn", epsilon=epsilon)
+    tensor_dist = _wasserstein_torch(
+        a,
+        b,
+        order=order,
+        method="sinkhorn",
+        epsilon=epsilon,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+    )
     return float(tensor_dist.detach().cpu().item())
 
 
@@ -195,6 +270,8 @@ def _wasserstein_torch(
     order: float,
     method: str,
     epsilon: float,
+    max_iterations: int = 200,
+    tolerance: float = 1e-6,
 ) -> Tensor:
     a = _ensure_tensor(diagram_a)
     b = _ensure_tensor(diagram_b, like=a)
@@ -217,7 +294,13 @@ def _wasserstein_torch(
         return torch.as_tensor(value, dtype=a.dtype, device=a.device)
 
     cost_matrix = _prepare_cost_matrix_torch(a, b, order)
-    return _sinkhorn(cost_matrix, order=order, epsilon=epsilon)
+    return _sinkhorn(
+        cost_matrix,
+        order=order,
+        epsilon=epsilon,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+    )
 
 
 def bottleneck_distance(
