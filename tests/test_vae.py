@@ -15,7 +15,7 @@ else:  # pragma: no cover - skip when torch missing
 @unittest.skipIf(torch is None, "PyTorch is required for VAE tests.")
 class MolecularVAETest(unittest.TestCase):
     def test_forward_shapes_and_sampling(self) -> None:
-        model = MolecularVAE(n_atoms=4, latent_dim=3, hidden_dims=(16, 8))
+        model = MolecularVAE(feature_shape=(4, 3), latent_dim=3, hidden_dims=(16, 8))
         batch = torch.randn(2, 4, 3)
         output = model(batch)
         self.assertEqual(output.reconstruction.shape, batch.shape)
@@ -27,7 +27,7 @@ class MolecularVAETest(unittest.TestCase):
 
     def test_constraint_loss_matches_targets(self) -> None:
         model = MolecularVAE(
-            n_atoms=4,
+            feature_shape=(4, 3),
             latent_dim=2,
             hidden_dims=(8,),
             enforce_constraints=True,
@@ -43,7 +43,7 @@ class MolecularVAETest(unittest.TestCase):
         self.assertGreater(loss.item(), 0.0)
 
     def test_vae_loss_outputs(self) -> None:
-        model = MolecularVAE(n_atoms=3, latent_dim=2, hidden_dims=(8,))
+        model = MolecularVAE(feature_shape=(3, 3), latent_dim=2, hidden_dims=(8,))
         batch = torch.randn(4, 3, 3)
         output = model(batch)
         losses = vae_loss(output, batch, beta=0.5)
@@ -53,6 +53,14 @@ class MolecularVAETest(unittest.TestCase):
         losses["loss"].backward()
         grads = [param.grad for param in model.parameters()]
         self.assertTrue(any(g is not None for g in grads))
+
+    def test_feature_space_inputs_supported(self) -> None:
+        model = MolecularVAE(feature_shape=(2,), latent_dim=2, hidden_dims=(8,), geometry="dihedral", center_inputs=False)
+        batch = torch.rand(10, 2) * 2 * torch.pi
+        output = model(batch)
+        self.assertEqual(output.reconstruction.shape, batch.shape)
+        losses = vae_loss(output, batch, beta=1.0)
+        losses["loss"].backward()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,42 @@
+# Topologically regularised VAE for alanine dipeptide φ/ψ inputs.
+dataset:
+  path: data/alanine_dipeptide/phi_psi.npy
+  representation: dihedral
+  geometry: dihedral
+  train_fraction: 0.7
+  val_fraction: 0.15
+  test_fraction: 0.15
+  seed: 321
+
+model:
+  latent_dim: 2
+  hidden_dims: [128, 64]
+  center_inputs: False
+  geometry: dihedral
+
+training:
+  epochs: 100
+  batch_size: 512
+  learning_rate: 0.001
+  weight_decay: 0.0
+  beta: 0.01
+  max_steps: null
+  log_every: 50
+  checkpoint_every: 500
+  output_dir: runs/alanine_dipeptide/topo
+  seed: 123
+  device: auto
+
+topology:
+  enabled: True
+  weight: 0.1
+  homology_dims: [1]
+  max_edge_length: null
+  update_every: 10
+  backend: auto
+  center: False
+  geometry: dihedral
+
+logging:
+  backend: tensorboard
+  project: topo-ala-dipeptide

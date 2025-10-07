@@ -47,6 +47,7 @@ class TopologicalLoss(nn.Module):
         max_edge_length: Optional[float] = None,
         backend: str = "auto",
         center: bool = True,
+        geometry: str = "cartesian",
         update_every: int = 1,
         reduction: str = "mean",
         dim_weights: Optional[Mapping[int, float]] = None,
@@ -59,6 +60,9 @@ class TopologicalLoss(nn.Module):
         self.max_edge_length = max_edge_length
         self.backend = backend
         self.center = center
+        if geometry not in {"cartesian", "dihedral"}:
+            raise ValueError("geometry must be 'cartesian' or 'dihedral'.")
+        self.geometry = geometry
         self.update_every = max(1, int(update_every))
         if reduction not in {"mean", "sum"}:
             raise ValueError("reduction must be 'mean' or 'sum'.")
@@ -143,6 +147,7 @@ class TopologicalLoss(nn.Module):
                     max_edge_length=self.max_edge_length,
                     backend=self.backend,
                     center=self.center,
+                    geometry=self.geometry,
                 )
             gen_np = _to_numpy(generated_batch)
             gen_diagrams = compute_persistence_diagrams(
@@ -151,6 +156,7 @@ class TopologicalLoss(nn.Module):
                 max_edge_length=self.max_edge_length,
                 backend=self.backend,
                 center=self.center,
+                geometry=self.geometry,
             )
 
             value, per_dim = self._evaluate(real_diagrams, gen_diagrams)

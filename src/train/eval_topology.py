@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import copy
+import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
@@ -67,11 +67,13 @@ def _plot_diagrams(diagrams, title: str, output_path: Path) -> None:
         ax.set_title(f"H_{dim} diagram")
         ax.set_xlabel("Birth")
         ax.set_ylabel("Death")
+        max_val = 1.0
         for diag in diagrams.by_dimension(dim):
             if diag.size == 0:
                 continue
             ax.scatter(diag[:, 0], diag[:, 1], s=12, alpha=0.6)
-        ax.plot([0, 1], [0, 1], color="black", linestyle="--", linewidth=0.8)
+            max_val = max(max_val, float(np.max(diag)))
+        ax.plot([0, max_val], [0, max_val], color="black", linestyle="--", linewidth=0.8)
     fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(output_path)
@@ -101,9 +103,25 @@ def evaluate(
 
     homology_dims = tuple(merged_config.get("topology", {}).get("homology_dims", (0, 1)))
     max_edge = merged_config.get("topology", {}).get("max_edge_length")
+    geometry = merged_config.get("topology", {}).get(
+        "geometry", merged_config.get("dataset", {}).get("geometry", "cartesian")
+    )
+    center = bool(merged_config.get("topology", {}).get("center", geometry == "cartesian"))
 
-    real_diagrams = compute_persistence_diagrams(real_batch, homology_dims=homology_dims, max_edge_length=max_edge)
-    gen_diagrams = compute_persistence_diagrams(samples, homology_dims=homology_dims, max_edge_length=max_edge)
+    real_diagrams = compute_persistence_diagrams(
+        real_batch,
+        homology_dims=homology_dims,
+        max_edge_length=max_edge,
+        geometry=geometry,
+        center=center,
+    )
+    gen_diagrams = compute_persistence_diagrams(
+        samples,
+        homology_dims=homology_dims,
+        max_edge_length=max_edge,
+        geometry=geometry,
+        center=center,
+    )
 
     metrics = _compute_metrics(real_diagrams, gen_diagrams, homology_dims)
 

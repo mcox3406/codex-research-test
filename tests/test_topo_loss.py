@@ -74,6 +74,10 @@ class TopologicalLossTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             topo(None, generated)
 
+    def test_invalid_geometry_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            TopologicalLoss(homology_dims=(1,), geometry="hyperbolic")
+
 
 if __name__ == "__main__":
     unittest.main()
