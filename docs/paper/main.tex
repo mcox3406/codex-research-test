@@ -56,27 +56,20 @@ The Wasserstein distance between two diagrams $\mathrm{PD}_1$ and $\mathrm{PD}_2
     W_p(\mathrm{PD}_1, \mathrm{PD}_2) = \left( \inf_{\gamma \in \Gamma} \sum_{z \in \mathrm{PD}_1} \| z - \gamma(z) \|_p^p \right)^{1/p},
     \label{eq:wasserstein}
 \end{equation}
-where $\Gamma$ is the set of partial bijections augmented with diagonal projections. Stability theorems guarantee that small perturbations of the input yield bounded changes in $W_p$, specifically
-\begin{equation}
-    W_\infty\big( \mathrm{PD}^{(k)}(X), \mathrm{PD}^{(k)}(Y) \big) \leq 2 \cdot d_H(X, Y),
-    \label{eq:stability}
-\end{equation}
-where $d_H$ denotes the Hausdorff distance \cite{cohen2007stability, chazal2016structure}. This robustness is essential when diagrams are estimated from stochastic generative samples.
+where $\Gamma$ is the set of bijections between points of the diagrams augmented with the diagonal. Stability theorems guarantee that small perturbations of the input yield bounded changes in $W_p$, making persistence robust to sampling noise \cite{cohen2007stability, chazal2016structure}.
 
 \subsection{Topology of Conformational Space}
-Molecular conformations inhabit manifolds embedded in high-dimensional spaces defined by internal coordinates or Cartesian coordinates. After modding out rigid motions, Eq.~\eqref{eq:manifold} provides a compact representation whose $H_1$ Betti number counts independent loop classes. Cyclic transitions, such as ring flips in cyclic peptides, induce loops in conformational space that manifest as persistent $H_1$ features \cite{wales2001microscopic, shaw2010atomic}. These loops correspond to distinct pathways connecting metastable states and are integral to thermodynamic and kinetic properties. Ignoring this topology leads to generative models that interpolate through unphysical conformations or collapse diverse pathways into single modes.
+Molecular conformations inhabit manifolds embedded in high-dimensional spaces defined by internal coordinates or Cartesian coordinates. Cyclic transitions, such as ring flips in cyclic peptides, induce loops in conformational space that manifest as persistent $H_1$ features \cite{wales2001microscopic, shaw2010atomic}. These loops correspond to distinct pathways connecting metastable states and are integral to thermodynamic and kinetic properties. Ignoring this topology leads to generative models that interpolate through unphysical conformations or collapse diverse pathways into single modes.
 
-Representing conformations via internal dihedral angles $\theta \in \mathbb{T}^m$ further illustrates the topological structure: the mapping $\Psi : \mathbb{T}^m \to (\mathbb{R}^3)^n / \mathrm{SE}(3)$ is continuous and often wraps non-trivially around loops induced by torsional periodicity. Prior studies of energy landscapes emphasize the importance of topology in understanding conformational diversity \cite{wales2001microscopic}. High-fidelity molecular dynamics simulations from D.~E.~Shaw Research reveal complex transition networks with multiple pathways \cite{shaw2010atomic}, underscoring the necessity of preserving loops during generative modeling. Topological descriptors therefore provide an interpretable lens for assessing whether generated ensembles respect known physical constraints.
+Prior studies of energy landscapes emphasize the importance of topology in understanding conformational diversity \cite{wales2001microscopic}. High-fidelity molecular dynamics simulations from D.~E.~Shaw Research reveal complex transition networks with multiple pathways \cite{shaw2010atomic}, underscoring the necessity of preserving loops during generative modeling. Topological descriptors therefore provide an interpretable lens for assessing whether generated ensembles respect known physical constraints.
 
 \subsection{Generative Models for Molecules}
-Variational autoencoders posit a latent Gaussian prior $p(z) = \mathcal{N}(0, I_d)$ and an encoder $q_\phi(z \mid x)$ that approximates the posterior over latent states. The decoder $p_\theta(x \mid z)$ induces a generative distribution $p_\theta(x) = \int p_\theta(x \mid z) p(z) \mathrm{d}z$ whose support inherits the topology of the latent space. Training maximizes the evidence lower bound (ELBO)
+Variational autoencoders posit a latent Gaussian prior and optimize the evidence lower bound (ELBO),
 \begin{equation}
-    \mathcal{L}_{\text{ELBO}}(\theta, \phi) = \mathbb{E}_{x \sim p_{\text{data}}} \big[ \mathbb{E}_{q_\phi(z \mid x)} [\log p_\theta(x \mid z)] - \beta \cdot \mathrm{KL}\big(q_\phi(z \mid x) \big\| p(z)\big) \big],
+    \mathcal{L}_{\text{ELBO}} = \mathbb{E}_{q_\phi(z \mid x)} [\log p_\theta(x \mid z)] - \beta \cdot \mathrm{KL}\big(q_\phi(z \mid x) \big\| p(z)\big),
     \label{eq:elbo}
 \end{equation}
-where the inner expectation forms the reconstruction loss $\mathcal{L}_{\text{recon}}$ and the Kullback--Leibler divergence acts as a regularizer \cite{kingma2014auto}. Because $p(z)$ is contractible, the pushforward $g_{\theta\,\#}p$ concentrates on a topologically trivial subset unless additional constraints are imposed.
-
-Diffusion models approximate the score of a noising process $x_t$ governed by a stochastic differential equation $\mathrm{d}x_t = f_t(x_t) \, \mathrm{d}t + g_t \, \mathrm{d}w_t$ and learn a time-dependent score network $s_\theta(x_t, t)$ \cite{song2021score}. Flow matching methods construct an ordinary differential equation $\dot{x}_t = u_\theta(x_t, t)$ whose terminal distribution matches the data \cite{lipman2023flow}. In both cases, the latent construction assumes Euclidean geometry and path-connectedness, leading to the same mismatch highlighted in Eq.~\eqref{eq:fundamental-group-mismatch}. Empirically, this mismatch manifests as mode collapse or interpolations that traverse energetically forbidden regions \cite{noe2019boltzmann, trippe2023diffusion}. Existing remedies rely on heuristic regularization or enhanced sampling but do not explicitly target topological invariants.
+where $q_\phi$ and $p_\theta$ denote encoder and decoder distributions respectively \cite{kingma2014auto}. Diffusion models and flow matching methods similarly assume Euclidean latent structures and optimize likelihoods under Gaussian perturbations \cite{song2021score, lipman2023flow}. These assumptions render latent spaces topologically trivial, creating mismatches with data manifolds that contain loops. Empirically, this mismatch manifests as mode collapse or interpolations that traverse energetically forbidden regions \cite{noe2019boltzmann, trippe2023diffusion}. Existing remedies rely on heuristic regularization or enhanced sampling but do not explicitly target topological invariants.
 
 \section{Methods}
 \subsection{Topological Loss Function}
