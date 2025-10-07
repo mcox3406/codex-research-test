@@ -1,0 +1,6 @@
+{
+  "num_samples": 512,
+  "num_atoms": 60,
+  "description": "Synthetic cyclic hexapeptide conformations with two ring-flipping loops",
+  "seed": 42
+}
