@@ -1,0 +1,14 @@
+{
+  "input_pdb": "data/templates/alanine_dipeptide.pdb",
+  "temperature_K": 500.0,
+  "ns_total": 20.0,
+  "save_interval_ps": 1.0,
+  "timestep_fs": 2.0,
+  "n_frames": 20000,
+  "n_atoms": 22,
+  "topology_hash": "ef4bc6ca1abe523c898f63e53759382d",
+  "forcefield": [
+    "amber99sbildn.xml",
+    "amber99_obc.xml"
+  ]
+}

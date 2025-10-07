@@ -1,0 +1,11 @@
+{
+  "n_frames": 9999,
+  "entropy_bits": 9.321522299926912,
+  "h1_count": 0,
+  "h1_max_persistence": 0.0,
+  "basin_occupancy": {
+    "alpha_R": 0.040104010401040106,
+    "C7eq": 0.0891089108910891,
+    "alpha_L": 0.011001100110011002
+  }
+}

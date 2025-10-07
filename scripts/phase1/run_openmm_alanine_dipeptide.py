@@ -109,61 +109,76 @@ def run_simulation(
     save_interval_ps: float,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    simulation, topology = _load_simulation(input_pdb, temperature)
 
-    total_steps = _production_steps(ns_total)
-    report_interval = _report_interval(save_interval_ps)
+    # Check if output files already exist
+    coords_file = output_dir / "coordinates.npy"
+    phi_psi_file = output_dir / "phi_psi.npy"
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = pathlib.Path(tmpdir)
-        dcd_path = tmp / "ala_dipeptide.dcd"
-        log_path = tmp / "ala_dipeptide.log"
+    if coords_file.exists() and phi_psi_file.exists():
+        print(f"Found existing output files in {output_dir}. Skipping simulation and loading data...", flush=True)
+        coords = np.load(coords_file)
+        angles = np.load(phi_psi_file)
+    else:
+        simulation, topology = _load_simulation(input_pdb, temperature)
 
-        simulation.reporters.append(DCDReporter(str(dcd_path), report_interval))
-        simulation.reporters.append(
-            StateDataReporter(
-                str(log_path),
-                report_interval,
-                step=True,
-                potentialEnergy=True,
-                temperature=True,
-                progress=True,
-                elapsedTime=True,
-                totalSteps=total_steps,
+        total_steps = _production_steps(ns_total)
+        report_interval = _report_interval(save_interval_ps)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = pathlib.Path(tmpdir)
+            dcd_path = tmp / "ala_dipeptide.dcd"
+            log_path = tmp / "ala_dipeptide.log"
+
+            simulation.reporters.append(DCDReporter(str(dcd_path), report_interval))
+            simulation.reporters.append(
+                StateDataReporter(
+                    str(log_path),
+                    report_interval,
+                    step=True,
+                    potentialEnergy=True,
+                    temperature=True,
+                    progress=True,
+                    elapsedTime=True,
+                    totalSteps=total_steps,
+                )
             )
-        )
-        simulation.reporters.append(
-            StateDataReporter(
-                sys.stdout,
-                report_interval,
-                step=True,
-                progress=True,
-                remainingTime=True,
-                speed=True,
-                totalSteps=total_steps,
+            simulation.reporters.append(
+                StateDataReporter(
+                    sys.stdout,
+                    report_interval,
+                    step=True,
+                    progress=True,
+                    remainingTime=True,
+                    speed=True,
+                    totalSteps=total_steps,
+                )
             )
-        )
 
-        print(
-            f"Running alanine dipeptide MD: {ns_total} ns at {temperature} K "
-            f"with frames every {save_interval_ps} ps.",
-            flush=True,
-        )
-        simulation.minimizeEnergy()
-        simulation.context.setVelocitiesToTemperature(temperature * kelvin)
-        simulation.step(total_steps)
+            print(
+                f"Running alanine dipeptide MD: {ns_total} ns at {temperature} K "
+                f"with frames every {save_interval_ps} ps.",
+                flush=True,
+            )
+            simulation.minimizeEnergy()
+            simulation.context.setVelocitiesToTemperature(temperature * kelvin)
+            simulation.step(total_steps)
 
-        traj = _align_frames([dcd_path], input_pdb)
+            traj = _align_frames([dcd_path], input_pdb)
 
-    coords = traj.xyz.astype(np.float32)
-    np.save(output_dir / "coordinates.npy", coords)
+        coords = traj.xyz.astype(np.float32)
+        np.save(output_dir / "coordinates.npy", coords)
 
-    _, phi = md.compute_phi(traj)
-    _, psi = md.compute_psi(traj)
-    if phi.shape[1] != 1 or psi.shape[1] != 1:
-        raise RuntimeError("Alanine dipeptide should yield a single phi and psi angle per frame.")
-    angles = _wrap_angles(phi[:, 0], psi[:, 0])
-    np.save(output_dir / "phi_psi.npy", angles.astype(np.float32))
+        _, phi = md.compute_phi(traj)
+        _, psi = md.compute_psi(traj)
+        if phi.shape[1] != 1 or psi.shape[1] != 1:
+            raise RuntimeError("Alanine dipeptide should yield a single phi and psi angle per frame.")
+        angles = _wrap_angles(phi[:, 0], psi[:, 0])
+        np.save(output_dir / "phi_psi.npy", angles.astype(np.float32))
+
+    traj = md.load(str(input_pdb))
+    topology_str = str(traj.topology)
+    import hashlib
+    topology_hash = hashlib.md5(topology_str.encode()).hexdigest()
 
     metadata = {
         "input_pdb": str(input_pdb),
@@ -173,7 +188,7 @@ def run_simulation(
         "timestep_fs": float(_DEFAULT_TIMESTEP.value_in_unit(femtosecond)),
         "n_frames": int(coords.shape[0]),
         "n_atoms": int(coords.shape[1]),
-        "topology_hash": md.load(str(input_pdb)).topology.md5(),
+        "topology_hash": topology_hash,
         "forcefield": list(_DEFAULT_FORCEFIELD),
     }
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))

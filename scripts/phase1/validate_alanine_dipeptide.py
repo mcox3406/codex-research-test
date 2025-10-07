@@ -124,7 +124,7 @@ def _basin_occupancy(angles: np.ndarray) -> Dict[str, float]:
     return counts
 
 
-def validate_dataset(phi_psi_path: pathlib.Path, output_dir: pathlib.Path) -> None:
+def validate_dataset(phi_psi_path: pathlib.Path, output_dir: pathlib.Path, max_samples: int = 5000) -> None:
     angles = np.load(phi_psi_path)
     if angles.ndim != 2 or angles.shape[1] != 2:
         raise ValueError("phi_psi.npy must have shape (n_frames, 2).")
@@ -134,9 +134,19 @@ def validate_dataset(phi_psi_path: pathlib.Path, output_dir: pathlib.Path) -> No
 
     _plot_ramachandran(angles, output_dir / "ramachandran_density.png")
 
+    # Subsample for persistence computation to speed it up
+    angles_for_pd = angles
+    if len(angles) > max_samples:
+        print(f"Subsampling {len(angles)} points to {max_samples} for persistence computation...", flush=True)
+        rng = np.random.RandomState(42)
+        indices = rng.choice(len(angles), size=max_samples, replace=False)
+        angles_for_pd = angles[indices]
+
+    # Let filtration go to maximum distance to capture all H1 features
     diagrams = compute_persistence_diagrams(
-        angles,
+        angles_for_pd,
         homology_dims=(0, 1),
+        max_edge_length=None,
         backend="auto",
         center=False,
         geometry="dihedral",
@@ -172,12 +182,18 @@ def parse_args() -> argparse.Namespace:
         default=pathlib.Path("results/alanine_dipeptide"),
         help="Directory to write validation artifacts",
     )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=5000,
+        help="Maximum number of samples for persistence computation (default: 5000)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    validate_dataset(args.phi_psi, args.output_dir)
+    validate_dataset(args.phi_psi, args.output_dir, max_samples=args.max_samples)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point only
