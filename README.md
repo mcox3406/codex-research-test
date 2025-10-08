@@ -87,6 +87,17 @@ python scripts/phase1/validate_alanine_dipeptide.py \
   --torus-metric sincos \
   --compare-geodesic
 
+# Cache reference persistence diagrams for fast topo loss
+python scripts/phase2/cache_reference_persistence.py \
+  data/alanine_dipeptide/phi_psi.npy \
+  results/alanine_dipeptide/reference_pd_sincos.npz \
+  --geometry dihedral \
+  --torus-metric sincos \
+  --torus-harmonics 2 \
+  --homology-dims 1 \
+  --sample-size 4000 \
+  --summary results/alanine_dipeptide/reference_pd_sincos.json
+
 # Train/evaluate VAEs directly in φ/ψ space
 python src/train/train_vae.py --config configs/alanine_dipeptide_baseline.yaml
 python src/train/train_vae.py --config configs/alanine_dipeptide_high_beta.yaml

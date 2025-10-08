@@ -68,6 +68,28 @@ class TopologicalLossTest(unittest.TestCase):
             self.assertIsNotNone(per_dim)
             self.assertAlmostEqual(per_dim[1], 1.25, places=6)
 
+    def test_reference_broadcasts_across_generated_batch(self) -> None:
+        topo = TopologicalLoss(homology_dims=(1,))
+        topo.set_reference(self._diagram(0.4))
+        generated = torch.ones((3, 2, 3))
+
+        diagrams = DiagramBatch(
+            diagrams=[{1: np.array([[0.0, 1.0]])} for _ in range(3)],
+            homology_dims=(1,),
+        )
+
+        with mock.patch(
+            "src.models.topo_loss.compute_persistence_diagrams",
+            return_value=diagrams,
+        ), mock.patch(
+            "src.models.topo_loss.wasserstein_distance",
+            side_effect=[0.2, 0.3, 0.4],
+        ) as mock_metric:
+            loss = topo(None, generated, step=0, force=True)
+
+        self.assertAlmostEqual(loss.item(), (0.2 + 0.3 + 0.4) / 3.0, places=6)
+        self.assertEqual(mock_metric.call_count, 3)
+
     def test_missing_reference_raises(self) -> None:
         topo = TopologicalLoss(homology_dims=(1,))
         generated = torch.ones((1, 2, 3))

@@ -38,6 +38,7 @@ topology:
   geometry: dihedral
   torus_metric: sincos
   torus_harmonics: 2
+  reference_diagrams: results/alanine_dipeptide/reference_pd_sincos.npz
 
 logging:
   backend: tensorboard

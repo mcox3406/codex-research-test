@@ -176,11 +176,12 @@ class TopologicalLoss(nn.Module):
         if len(real.diagrams) == 0 or len(generated.diagrams) == 0:
             return 0.0, {dim: 0.0 for dim in self.homology_dims}
 
-        batch = min(len(real.diagrams), len(generated.diagrams))
+        real_count = len(real.diagrams)
+        gen_count = len(generated.diagrams)
         dim_accumulator: Dict[int, list[float]] = {dim: [] for dim in self.homology_dims}
 
-        for idx in range(batch):
-            real_diagram = real.diagrams[idx]
+        for idx in range(gen_count):
+            real_diagram = real.diagrams[idx % real_count]
             gen_diagram = generated.diagrams[idx]
             for dim in self.homology_dims:
                 dist = self._compute_distance(
