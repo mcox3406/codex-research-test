@@ -91,6 +91,29 @@ def _torus_pairwise_distances(points: np.ndarray) -> np.ndarray:
     return np.sqrt(np.sum(diff * diff, axis=-1))
 
 
+def _torus_sincos_embedding(points: np.ndarray, harmonics: int = 1) -> np.ndarray:
+    r"""Embed torus coordinates into Euclidean space using sine/cosine features.
+
+    The embedding maps an angle ``θ`` to the vector
+
+    .. math:: [\cos(k\theta), \sin(k\theta)]_{k=1}^{H}
+
+    which linearises the periodic boundaries and allows Euclidean filtrations to
+    approximate geodesic distances on ``\mathbb{T}^n``. Increasing
+    ``harmonics`` adds higher-frequency components improving fidelity at the
+    cost of dimensionality. ``harmonics`` must be a positive integer.
+    """
+
+    if harmonics <= 0:
+        raise ValueError("harmonics must be a positive integer")
+    wrapped = np.mod(points, 2.0 * np.pi)
+    components = []
+    for harmonic in range(1, harmonics + 1):
+        components.append(np.cos(harmonic * wrapped))
+        components.append(np.sin(harmonic * wrapped))
+    return np.concatenate(components, axis=-1)
+
+
 def _compute_with_gudhi(
     points: Optional[np.ndarray],
     homology_dims: Sequence[int],
@@ -147,6 +170,9 @@ def compute_persistence_diagrams(
     backend: str = "auto",
     center: bool = True,
     geometry: str = "cartesian",
+    *,
+    torus_metric: str = "geodesic",
+    torus_harmonics: int = 1,
 ) -> DiagramBatch:
     """Compute persistence diagrams for a batch of conformations.
 
@@ -171,8 +197,16 @@ def compute_persistence_diagrams(
     geometry:
         Metric definition for the point cloud. ``'cartesian'`` applies the usual
         Euclidean metric after optional centering. ``'dihedral'`` interprets the
-        coordinates as periodic angles on a flat torus and uses the associated
-        geodesic distance.
+        coordinates as periodic angles on a flat torus.
+    torus_metric:
+        Strategy used when ``geometry='dihedral'``. ``'geodesic'`` (default)
+        computes exact wrapped distances on the torus. ``'sincos'`` embeds each
+        angle using sine/cosine features before constructing a Euclidean
+        filtration, which is often more numerically stable for sparse samples.
+    torus_harmonics:
+        Number of Fourier harmonics to include in the sine/cosine embedding when
+        ``torus_metric='sincos'``. Higher values approximate torus geodesics more
+        accurately at the cost of doubling the ambient dimension per harmonic.
 
     Returns
     -------
@@ -223,13 +257,29 @@ def compute_persistence_diagrams(
                 dist_matrix = _pairwise_distances(points)
             max_edge = max_edge_length if max_edge_length is not None else float(np.max(dist_matrix))
         elif geometry == "dihedral":
-            dist_matrix = _torus_pairwise_distances(points)
-            max_edge = max_edge_length if max_edge_length is not None else float(np.max(dist_matrix))
+            if torus_metric not in {"geodesic", "sincos"}:
+                raise ValueError("torus_metric must be 'geodesic' or 'sincos'.")
+            if torus_metric == "geodesic":
+                dist_matrix = _torus_pairwise_distances(points)
+                max_edge = max_edge_length if max_edge_length is not None else float(np.max(dist_matrix))
+            else:  # torus_metric == "sincos"
+                embedded = _torus_sincos_embedding(points, harmonics=torus_harmonics)
+                if max_edge_length is None or backend == "ripser":
+                    dist_matrix = _pairwise_distances(embedded)
+                max_edge = max_edge_length if max_edge_length is not None else float(np.max(dist_matrix))
+                points = embedded
         else:
             raise ValueError(f"Unsupported geometry '{geometry}'.")
 
         if backend == "gudhi":
-            diagrams.append(_compute_with_gudhi(points if geometry == "cartesian" else None, homology_dims, max_edge, dist_matrix))
+            diagrams.append(
+                _compute_with_gudhi(
+                    points if geometry == "cartesian" or torus_metric == "sincos" else None,
+                    homology_dims,
+                    max_edge,
+                    dist_matrix,
+                )
+            )
         elif backend == "ripser":
             if dist_matrix is None:
                 dist_matrix = _pairwise_distances(points)
@@ -244,6 +294,9 @@ def compute_persistence_diagrams(
     }
     if max_edge_length is not None:
         metadata["max_edge_length"] = float(max_edge_length)
+    if geometry == "dihedral":
+        metadata["torus_metric"] = torus_metric
+        metadata["torus_harmonics"] = int(torus_harmonics)
 
     return DiagramBatch(diagrams=diagrams, homology_dims=homology_dims, metadata=metadata)
 

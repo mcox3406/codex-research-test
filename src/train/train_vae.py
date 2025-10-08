@@ -72,6 +72,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "backend": "auto",
         "center": True,
         "geometry": "cartesian",
+        "torus_metric": "geodesic",
+        "torus_harmonics": 1,
     },
     "logging": {
         "backend": "tensorboard",
@@ -238,6 +240,8 @@ def _create_topological_loss(config: Dict[str, Any]) -> Optional[TopologicalLoss
         backend=topo_cfg.get("backend", "auto"),
         center=center,
         geometry=geometry,
+        torus_metric=topo_cfg.get("torus_metric", "geodesic"),
+        torus_harmonics=int(topo_cfg.get("torus_harmonics", 1)),
         update_every=int(topo_cfg.get("update_every", 1)),
     )
 
