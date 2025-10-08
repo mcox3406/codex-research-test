@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.models.topo_loss import TopologicalLoss
 from src.models.vae import MolecularVAE, vae_loss
+from src.tda.io import load_diagram_batch
 
 try:  # Optional YAML support for configs
     import yaml
@@ -74,6 +75,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "geometry": "cartesian",
         "torus_metric": "geodesic",
         "torus_harmonics": 1,
+        "reference_diagrams": None,
     },
     "logging": {
         "backend": "tensorboard",
@@ -234,7 +236,7 @@ def _create_topological_loss(config: Dict[str, Any]) -> Optional[TopologicalLoss
         return None
     center = bool(topo_cfg.get("center", True))
     geometry = topo_cfg.get("geometry", config["dataset"].get("geometry", "cartesian"))
-    return TopologicalLoss(
+    topo_loss = TopologicalLoss(
         homology_dims=tuple(topo_cfg.get("homology_dims", (1,))),
         max_edge_length=topo_cfg.get("max_edge_length"),
         backend=topo_cfg.get("backend", "auto"),
@@ -244,6 +246,18 @@ def _create_topological_loss(config: Dict[str, Any]) -> Optional[TopologicalLoss
         torus_harmonics=int(topo_cfg.get("torus_harmonics", 1)),
         update_every=int(topo_cfg.get("update_every", 1)),
     )
+
+    reference_path = topo_cfg.get("reference_diagrams")
+    if reference_path:
+        ref_file = Path(reference_path)
+        if not ref_file.exists():
+            raise FileNotFoundError(
+                f"Reference persistence diagrams not found at {ref_file}. Generate them via "
+                "scripts/phase2/cache_reference_persistence.py before training."
+            )
+        topo_loss.set_reference(load_diagram_batch(ref_file))
+
+    return topo_loss
 
 
 def _device_from_config(config: Dict[str, Any]) -> torch.device:
