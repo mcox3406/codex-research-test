@@ -36,6 +36,8 @@ topology:
   backend: auto
   center: False
   geometry: dihedral
+  torus_metric: sincos
+  torus_harmonics: 2
 
 logging:
   backend: tensorboard

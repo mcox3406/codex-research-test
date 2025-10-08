@@ -36,20 +36,19 @@ def _batch_dihedral(points: np.ndarray) -> np.ndarray:
     p2 = points[:, 2, :]
     p3 = points[:, 3, :]
 
-    b0 = p1 - p0
+    b0 = p0 - p1
     b1 = p2 - p1
     b2 = p3 - p2
 
     b1_norm = np.linalg.norm(b1, axis=1, keepdims=True)
-    # Prevent division by zero by adding an epsilon; degenerate torsions will
-    # produce zero angles after normalization.
-    b1_unit = np.divide(b1, np.where(b1_norm == 0.0, 1.0, b1_norm))
+    safe_b1_norm = np.where(b1_norm == 0.0, 1.0, b1_norm)
+    b1_unit = b1 / safe_b1_norm
 
     v = b0 - (np.sum(b0 * b1_unit, axis=1, keepdims=True) * b1_unit)
     w = b2 - (np.sum(b2 * b1_unit, axis=1, keepdims=True) * b1_unit)
 
     x = np.sum(v * w, axis=1)
-    y = np.sum(np.cross(b1_unit, v), w, axis=1)
+    y = np.sum(np.cross(v, b1_unit) * w, axis=1)
     angles = np.arctan2(y, x)
     return angles
 

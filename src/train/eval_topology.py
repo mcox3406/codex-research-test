@@ -108,12 +108,17 @@ def evaluate(
     )
     center = bool(merged_config.get("topology", {}).get("center", geometry == "cartesian"))
 
+    torus_metric = merged_config.get("topology", {}).get("torus_metric", "geodesic")
+    torus_harmonics = int(merged_config.get("topology", {}).get("torus_harmonics", 1))
+
     real_diagrams = compute_persistence_diagrams(
         real_batch,
         homology_dims=homology_dims,
         max_edge_length=max_edge,
         geometry=geometry,
         center=center,
+        torus_metric=torus_metric,
+        torus_harmonics=torus_harmonics,
     )
     gen_diagrams = compute_persistence_diagrams(
         samples,
@@ -121,6 +126,8 @@ def evaluate(
         max_edge_length=max_edge,
         geometry=geometry,
         center=center,
+        torus_metric=torus_metric,
+        torus_harmonics=torus_harmonics,
     )
 
     metrics = _compute_metrics(real_diagrams, gen_diagrams, homology_dims)

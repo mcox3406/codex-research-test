@@ -56,6 +56,31 @@ space:
 
 All outputs land in `results/phase1/` by default.
 
+## 4. Alanine dipeptide Ramachandran pipeline
+
+When the cyclic hexapeptide does not exhibit strong $H_1$ features, switch to
+the alanine dipeptide workflow that operates directly in $(ϕ, ψ)$ space:
+
+```
+python scripts/phase1/run_openmm_alanine_dipeptide.py \
+    --input-pdb data/templates/alanine_dipeptide.pdb \
+    --output-dir data/alanine_dipeptide \
+    --ns-total 20 \
+    --save-interval-ps 1
+
+python scripts/phase1/validate_alanine_dipeptide.py \
+    --phi-psi data/alanine_dipeptide/phi_psi.npy \
+    --output-dir results/alanine_dipeptide \
+    --torus-metric sincos \
+    --compare-geodesic
+```
+
+The validation step now accepts `--torus-metric {geodesic,sincos}`; the
+`sincos` option embeds angles via sine/cosine harmonics to stabilise persistent
+homology computations on sparse torus samples. Enable `--compare-geodesic` to
+produce side-by-side diagnostics of the wrapped geodesic metric versus the
+embedding.
+
 ## Tips
 
 - Install dependencies via `conda env create -f environment.yml` before running.
@@ -65,3 +90,6 @@ All outputs land in `results/phase1/` by default.
   generation so it can compute φ/ψ dihedrals prior to persistence analysis.
 - Validate a small subset first using `--max-samples 500` when running the
   validation script.
+- For quick regression tests without MD, use the playground generator at
+  `scripts/playground/generate_dihedral_playground.py` to create torus datasets
+  with clear, long-lived $H_1$ loops.

@@ -4,6 +4,7 @@ from unittest import mock
 
 import numpy as np
 
+from src.tda import persistence as persistence_module
 from src.tda.persistence import compute_persistence_diagrams
 
 
@@ -38,6 +39,28 @@ class PersistenceGeometryTest(unittest.TestCase):
     def test_cartesian_geometry_requires_three_dims(self) -> None:
         with self.assertRaises(ValueError):
             compute_persistence_diagrams(np.zeros((1, 4, 2)), geometry="cartesian")
+
+    @unittest.skipUnless(
+        getattr(persistence_module, "gudhi", None) is not None
+        or getattr(persistence_module, "ripser", None) is not None,
+        "No persistent homology backend available",
+    )
+    def test_sincos_metric_recovers_circular_loop(self) -> None:
+        theta = np.linspace(0.0, 2.0 * math.pi, num=180, endpoint=False)
+        loop = np.stack([np.mod(theta + 0.3, 2.0 * math.pi), np.mod(theta + 1.1, 2.0 * math.pi)], axis=1)
+        diagrams = compute_persistence_diagrams(
+            loop,
+            homology_dims=(1,),
+            geometry="dihedral",
+            center=False,
+            torus_metric="sincos",
+            torus_harmonics=2,
+        )
+        h1 = diagrams.diagrams[0].get(1, np.empty((0, 2)))
+        self.assertGreaterEqual(h1.shape[0], 1)
+        if h1.size:
+            lifetime = float(np.max(h1[:, 1] - h1[:, 0]))
+            self.assertGreater(lifetime, 0.05)
 
 
 if __name__ == "__main__":

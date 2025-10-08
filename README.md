@@ -19,7 +19,9 @@ python scripts/phase1/run_openmm_alanine_dipeptide.py \
 # Validate topology in φ/ψ space (produces Ramachandran + PD plots)
 python scripts/phase1/validate_alanine_dipeptide.py \
   --phi-psi data/alanine_dipeptide/phi_psi.npy \
-  --output-dir results/alanine_dipeptide
+  --output-dir results/alanine_dipeptide \
+  --torus-metric sincos \
+  --compare-geodesic
 
 # Train baseline and topo-regularised VAEs
 python src/train/train_vae.py --config configs/alanine_dipeptide_baseline.yaml
@@ -81,7 +83,9 @@ python scripts/phase1/run_openmm_alanine_dipeptide.py \
 # Validate φ/ψ coverage, persistence, and basin occupancies
 python scripts/phase1/validate_alanine_dipeptide.py \
   --phi-psi data/alanine_dipeptide/phi_psi.npy \
-  --output-dir results/alanine_dipeptide
+  --output-dir results/alanine_dipeptide \
+  --torus-metric sincos \
+  --compare-geodesic
 
 # Train/evaluate VAEs directly in φ/ψ space
 python src/train/train_vae.py --config configs/alanine_dipeptide_baseline.yaml
@@ -90,8 +94,33 @@ python src/train/train_vae.py --config configs/alanine_dipeptide_topo.yaml
 ```
 
 The validation routine outputs a Ramachandran density, torus-aware persistence
-diagrams, and occupancy statistics for the canonical $\alpha_R$, $C7_{eq}$, and
-$\alpha_L$ basins to confirm the presence of persistent $H_1$ loops.
+diagrams (using a sine/cosine embedding of the torus by default), and occupancy
+statistics for the canonical $\alpha_R$, $C7_{eq}$, and $\alpha_L$ basins. Use
+`--compare-geodesic` to additionally contrast the wrapped geodesic metric when
+diagnosing weak $H_1$ signals.
+
+### Torus playground dataset
+
+For rapid experimentation or debugging persistent homology settings without
+running MD, generate a synthetic torus dataset with clear $H_1$ loops:
+
+```bash
+python scripts/playground/generate_dihedral_playground.py \
+  --output-dir data/playground \
+  --n-samples 4000 \
+  --noise 0.08
+
+# Inspect the resulting persistence diagram
+python scripts/phase1/validate_alanine_dipeptide.py \
+  --phi-psi data/playground/torus_loops.npy \
+  --output-dir results/playground \
+  --torus-metric sincos \
+  --compare-geodesic
+```
+
+The playground workflow produces Ramachandran density plots and persistence
+diagrams that exhibit at least one long-lived $H_1$ feature, providing a
+lightweight regression target for topology-aware pipelines.
 
 ## Core Idea
 

@@ -62,7 +62,7 @@ def _plot_ramachandran(angles: np.ndarray, output: pathlib.Path) -> None:
     plt.close(fig)
 
 
-def _plot_persistence(diagrams, output_prefix: pathlib.Path) -> Tuple[int, float]:
+def _plot_persistence(diagrams, output_prefix: pathlib.Path, suffix: str = "") -> Tuple[int, float]:
     diag = diagrams.diagrams[0]
     h1 = diag.get(1, np.empty((0, 2)))
 
@@ -80,7 +80,7 @@ def _plot_persistence(diagrams, output_prefix: pathlib.Path) -> Tuple[int, float
     ax.set_title("Persistence diagram (alanine dipeptide)")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(output_prefix.with_name(output_prefix.name + "_pd.png"), dpi=300)
+    fig.savefig(output_prefix.with_name(output_prefix.name + f"_pd{suffix}.png"), dpi=300)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(5, 3))
@@ -95,7 +95,7 @@ def _plot_persistence(diagrams, output_prefix: pathlib.Path) -> Tuple[int, float
     ax.set_ylabel("Feature index")
     ax.set_title("Barcode (H0/H1)")
     fig.tight_layout()
-    fig.savefig(output_prefix.with_name(output_prefix.name + "_barcode.png"), dpi=300)
+    fig.savefig(output_prefix.with_name(output_prefix.name + f"_barcode{suffix}.png"), dpi=300)
     plt.close(fig)
 
     lifetimes = h1[:, 1] - h1[:, 0] if h1.size else np.array([])
@@ -124,7 +124,15 @@ def _basin_occupancy(angles: np.ndarray) -> Dict[str, float]:
     return counts
 
 
-def validate_dataset(phi_psi_path: pathlib.Path, output_dir: pathlib.Path, max_samples: int = 5000) -> None:
+def validate_dataset(
+    phi_psi_path: pathlib.Path,
+    output_dir: pathlib.Path,
+    max_samples: int = 5000,
+    *,
+    torus_metric: str = "sincos",
+    torus_harmonics: int = 2,
+    compare_geodesic: bool = False,
+) -> None:
     angles = np.load(phi_psi_path)
     if angles.ndim != 2 or angles.shape[1] != 2:
         raise ValueError("phi_psi.npy must have shape (n_frames, 2).")
@@ -150,8 +158,27 @@ def validate_dataset(phi_psi_path: pathlib.Path, output_dir: pathlib.Path, max_s
         backend="auto",
         center=False,
         geometry="dihedral",
+        torus_metric=torus_metric,
+        torus_harmonics=torus_harmonics,
     )
-    h1_count, h1_max = _plot_persistence(diagrams, output_dir / "persistence")
+    h1_count, h1_max = _plot_persistence(
+        diagrams,
+        output_dir / "persistence",
+        suffix=f"_{torus_metric}",
+    )
+
+    geodesic_metrics: Tuple[int, float] | None = None
+    if compare_geodesic and torus_metric != "geodesic":
+        geo_diagrams = compute_persistence_diagrams(
+            angles_for_pd,
+            homology_dims=(0, 1),
+            max_edge_length=None,
+            backend="auto",
+            center=False,
+            geometry="dihedral",
+            torus_metric="geodesic",
+        )
+        geodesic_metrics = _plot_persistence(geo_diagrams, output_dir / "persistence", suffix="_geodesic")
 
     hist, _, _ = np.histogram2d(
         angles[:, 0],
@@ -168,8 +195,13 @@ def validate_dataset(phi_psi_path: pathlib.Path, output_dir: pathlib.Path, max_s
         "entropy_bits": float(entropy(flat_hist, base=2)),
         "h1_count": h1_count,
         "h1_max_persistence": h1_max,
+        "torus_metric": torus_metric,
+        "torus_harmonics": int(torus_harmonics),
         "basin_occupancy": basin_stats,
     }
+    if geodesic_metrics is not None:
+        summary["geodesic_h1_count"] = geodesic_metrics[0]
+        summary["geodesic_h1_max_persistence"] = geodesic_metrics[1]
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
 
@@ -188,12 +220,37 @@ def parse_args() -> argparse.Namespace:
         default=5000,
         help="Maximum number of samples for persistence computation (default: 5000)",
     )
+    parser.add_argument(
+        "--torus-metric",
+        type=str,
+        default="sincos",
+        choices=["geodesic", "sincos"],
+        help="Metric to use for torus persistence computation (default: sincos)",
+    )
+    parser.add_argument(
+        "--torus-harmonics",
+        type=int,
+        default=2,
+        help="Number of harmonics for the sincos embedding (default: 2)",
+    )
+    parser.add_argument(
+        "--compare-geodesic",
+        action="store_true",
+        help="Also compute diagrams with the geodesic torus metric for comparison.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    validate_dataset(args.phi_psi, args.output_dir, max_samples=args.max_samples)
+    validate_dataset(
+        args.phi_psi,
+        args.output_dir,
+        max_samples=args.max_samples,
+        torus_metric=args.torus_metric,
+        torus_harmonics=args.torus_harmonics,
+        compare_geodesic=args.compare_geodesic,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point only
